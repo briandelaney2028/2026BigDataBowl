@@ -6,7 +6,19 @@ import glob
 DATA_DIR = 'Data/'
 
 def load_training_df(method='inner'):
-    
+    """
+    Loads and merges all training input and output CSV files from the Data/train directory into a single DataFrame.
+
+    Parameters:
+        method (str): Merge method for pandas.merge (e.g., 'inner', 'left').
+            'inner' retains only matched keys, 'left' retains all rows from input.
+
+    Returns:
+        pd.DataFrame: Merged DataFrame containing input features and true output values.
+
+    Raises:
+        FileNotFoundError: If no input files are found in the expected directory.
+    """
     input_path = os.path.join(DATA_DIR, 'train/')
     # collect all csvs
     input_files  = glob.glob(os.path.join(input_path,  'input_2023_w*.csv'))
@@ -29,11 +41,19 @@ def load_training_df(method='inner'):
     return df_merged
 
 def load_supplemental_df(method='inner'):
+    """
+    Loads the supplementary data CSV and merges it with the training data DataFrame.
+
+    Parameters:
+        method (str): Merge method for pandas.merge (e.g., 'inner', 'left').
+            'inner' retains only matched keys, 'left' retains all rows from training data.
+
+    Returns:
+        pd.DataFrame: Merged DataFrame containing training data and supplementary information.
+    """
     supp_path = os.path.join(DATA_DIR, 'supplementary_data.csv')
     df_supp = pd.read_csv(supp_path)
-       
     df_merged = load_training_df()
-    
     df_all = pd.merge(
         df_merged, df_supp,
         on=['game_id', 'play_id'], how=method
