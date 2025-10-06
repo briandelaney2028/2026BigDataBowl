@@ -3,9 +3,11 @@ import os
 import glob
 
 
+DATA_DIR = 'Data/'
+
 def load_training_df(method='inner'):
-    data_dir = 'Data/'
-    input_path = os.path.join(data_dir, 'train/')
+    
+    input_path = os.path.join(DATA_DIR, 'train/')
     # collect all csvs
     input_files  = glob.glob(os.path.join(input_path,  'input_2023_w*.csv'))
     output_files = glob.glob(os.path.join(input_path, 'output_2023_w*.csv'))
@@ -27,12 +29,16 @@ def load_training_df(method='inner'):
     return df_merged
 
 def load_supplemental_df(method='inner'):
+    supp_path = os.path.join(DATA_DIR, 'supplementary_data.csv')
+    df_supp = pd.read_csv(supp_path)
+       
     df_merged = load_training_df()
-    df_supp = pd.merge(
+    
+    df_all = pd.merge(
         df_merged, df_supp,
         on=['game_id', 'play_id'], how=method
     )
-    return df_supp
+    return df_all
 
 
 if __name__=='__main__':
