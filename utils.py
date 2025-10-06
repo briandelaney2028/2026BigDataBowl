@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import os
 import glob
 
@@ -60,6 +61,21 @@ def load_supplemental_df(method:str='inner')->pd.DataFrame:
     )
     return df_all
 
+def height_to_inches(height_str: str) -> int:
+    """
+    Converts height from feet-inches format (e.g., "6-2") to total inches.
+
+    Parameters:
+        height_str (str): Height in feet-inches format.
+
+    Returns:
+        int: Height in total inches.
+    """
+    try:
+        feet, inches = map(int, height_str.split('-'))
+        return feet * 12 + inches
+    except Exception as e:
+        return np.nan
 
 if __name__=='__main__':
     df_train = load_training_df()
