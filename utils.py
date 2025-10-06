@@ -5,7 +5,7 @@ import glob
 
 DATA_DIR = 'Data/'
 
-def load_training_df(method='inner'):
+def load_training_df(method:str='inner')->pd.DataFrame:
     """
     Loads and merges all training input and output CSV files from the Data/train directory into a single DataFrame.
 
@@ -40,7 +40,7 @@ def load_training_df(method='inner'):
     )
     return df_merged
 
-def load_supplemental_df(method='inner'):
+def load_supplemental_df(method:str='inner')->pd.DataFrame:
     """
     Loads the supplementary data CSV and merges it with the training data DataFrame.
 
