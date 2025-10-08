@@ -18,6 +18,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     ### Player Physics ###
     ######################
 
+    ### generate player_bmi [kg/m^2]
+    df['player_bmi'] = 703 * df['player_weight'] / (df['player_height'] ** 2)
+
     ### generate x_velocity and y_velocity features [yd/s]
     speed = df['s']
     direction_rad = df['dir'] * (np.pi / 180)  # Convert degrees to radians
