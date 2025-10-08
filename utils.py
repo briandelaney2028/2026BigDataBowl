@@ -89,9 +89,42 @@ def height_to_inches(height_str: str) -> int:
     except Exception as e:
         return np.nan
 
+def invert_direction(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Standardizes the 'play_direction' and adjusts 'x_input', 'y_input', 'o', and 'dir' accordingly.
+    EXAMPLE:
+    A play moving left at the absolute coordinates (x=30, y=30) with orientation 270° and direction 180°
+    would be transformed to a play moving right at (x=90, y=23.3) with orientation 90° and direction 0°.
+
+    Parameters:
+        df (pd.DataFrame): Input DataFrame containing 'play_direction', 'x_input', 'y_input', 'o', and 'dir'.
+    
+    Returns:
+        pd.DataFrame: DataFrame with standardized 'play_direction' and adjusted coordinates and angles.
+    """
+
+    df_out = df.copy()
+    left_data = df_out['play_direction'] == 'left'
+    # adjust line of scrimmage
+    df_out.loc[left_data, 'absolute_yardline_number'] = 120 - df_out.loc[left_data, 'absolute_yardline_number']
+    # adjust x_input and y_input coordinates
+    df_out.loc[left_data, 'x_input'] = 120 - df_out.loc[left_data, 'x_input']
+    df_out.loc[left_data, 'y_input'] = 53.3 - df_out.loc[left_data, 'y_input']
+    # adjust orientation and direction already non-negative
+    df_out.loc[left_data, 'o'] = 360 - df_out.loc[left_data, 'o']
+    df_out.loc[left_data, 'dir'] = 360 - df_out.loc[left_data, 'dir']
+    # adjust ball_land coordinates
+    df_out.loc[left_data, 'ball_land_x'] = 120 - df_out.loc[left_data, 'ball_land_x']
+    df_out.loc[left_data, 'ball_land_y'] = 53.3 - df_out.loc[left_data, 'ball_land_y']
+    # adjust target coordinates
+    df_out.loc[left_data, 'x_target'] = 120 - df_out.loc[left_data, 'x_target']
+    df_out.loc[left_data, 'y_target'] = 53.3 - df_out.loc[left_data, 'y_target']
+
+    return df_out
+
 if __name__=='__main__':
     df_train = load_training_df(temporal=False)
-    print(df_train.loc[:20, ['frame_id', 'x_input', 'x_target']])
+    print(df_train[df_train['play_direction'] == 'left'].loc[:1000:50, ['absolute_yardline_number', 'player_name', 'x_input', 'o', 'ball_land_x', 'y_target']])
 
-    # df_supp = load_supplemental_df()
-    # print(df_supp.head())
+    df_train = invert_direction(df_train)
+    print(df_train[df_train['play_direction'] == 'left'].loc[:1000:50, ['absolute_yardline_number', 'player_name', 'x_input', 'o', 'ball_land_x', 'y_target']])
