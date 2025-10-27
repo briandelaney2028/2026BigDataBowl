@@ -1,100 +1,119 @@
 import pandas as pd
 import numpy as np
-from utils import height_to_inches
+from utils import height_to_inches, Config
 
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+def engineer_features(df: pd.DataFrame, verbose=True) -> pd.DataFrame:
     """
-    Engineers new features for the given DataFrame.
+    Engineers revised set of new features for the given DataFrame.
+    NOTE: Coordinate system 0 deg is along y-axis and increases clockwise
 
     Parameters:
-        df (pd.DataFrame): Input DataFrame containing raw features.
-
+        df (pd.DataFrame): Input DataFrame
+        verbose (bool): Whether to print progress messages
     Returns:
-        pd.DataFrame: DataFrame augmented with engineered features.
+        df (pd.DataFrame): Transformed DataFrame
     """
+    df = df.copy()
+    df.sort_values(by=['game_id', 'play_id', 'nfl_id', 'frame_id'], ascending=True, inplace=True)
+
+    #########################
+    ### One-Hot Encodings ###
+    #########################
+    if verbose:
+        print('---Generating One-Hot Encodings---')
+
+    # vectorized .map() to set encodings
+    side_map = {'Offense': 1, 'Defense': 0}
+
+    ### generate offense or defense switches
+    df['is_offense'] = df['player_side'].map(side_map).fillna(0).astype(int)
+    df['is_defense'] = 1 - df['is_offense']
+
+    ### generate player_role switches
+    role_cols = ['is_defensive_coverage', 'is_other_route_runner', 'is_passer', 'is_targeted_receiver']
+    role_targets = ['Defensive Coverage', 'Other Route Runner', 'Passer', 'Targeted Receiver']
+    for col, role in zip(role_cols, role_targets):
+        df[col] = (df['player_role'] == role).astype(np.int8)
     
     ######################
     ### Player Physics ###
     ######################
+    if verbose:
+        print('---Generating Player Physics---')
 
     ### generate player_bmi [kg/m^2]
     df['player_bmi'] = 703 * df['player_weight'] / (df['player_height'] ** 2)
 
-    ### generate x_velocity and y_velocity features [yd/s]
-    speed = df['s']
-    direction_rad = df['dir'] * (np.pi / 180)  # Convert degrees to radians
-    df['x_velocity'] = speed * np.cos(direction_rad)
-    df['y_velocity'] = speed * np.sin(direction_rad)
+    ### generate x_velo and y_velo features [yd/s]
+    speed = df['s'].to_numpy()
+    direction_rad = np.deg2rad(df['dir'].to_numpy())   # deg -> rad
+    df['x_velocity'] = speed * np.sin(direction_rad)
+    df['y_velocity'] = speed * np.cos(direction_rad)
 
-    ### generate angle diff between orientation and direction [deg]
-    orientation = df['o']
-    direction = df['dir']
-    angle_diff_raw = orientation - direction
-    # normalize to [-180, 180]
-    df['angle_diff'] = ((angle_diff_raw + 180) % 360) - 180
+    ### generate angle diff between orientation and direction [deg] [-180, 180)
+    df['angle_diff'] = ((df['o'] - df['dir'] + 180) % 360) - 180
 
-    ### generate momentum [slug*yd/s]
-    df['player_momentum'] = 0.03108 * df['player_weight'] * df['s']
+    ### generate player jerk [yd/s^3] and angular velo [deg/s]
+    # NOTE: Data grouped by game_id, play_id, nfl_id to ensure jerk
+    #       is calculated per player per play per game
+    group_keys = ['game_id', 'play_id', 'nfl_id']
+    # temporary columns
+    df['a_diff'] = df.groupby(group_keys)['a'].transform('diff')
+    df['o_diff'] = df.groupby(group_keys)['o'].transform('diff')
+    
+    # delta t is 0.1 for all timesteps
+    df['jerk'] = df['a_diff'] / 0.1
+    df['angular_velocity'] = df['o_diff'] / 0.1
 
-    ### generate player jerk [yd/s^3]
-    # NOTE: Data grouped by game_id, play_id, nfl_id to ensure jerk is calculated per player per play
-    # calculate jerk for all rows naively
-    df['jerk'] = df['a'].diff() / 0.1
-    # identify rows with frame_ids > 1 for each player in each play in each game
-    same_sequence = (
-        (df['game_id'] == df['game_id'].shift()) &
-        (df['play_id'] == df['play_id'].shift()) &
-        (df['nfl_id'] == df['nfl_id'].shift()) 
-    )
-    # set jerk to NA for rows with frame_id == 1 (i.e., break in sequence)
-    df.loc[~same_sequence, 'jerk'] = pd.NA
-    # fill NA values with next frame's jerk value (i.e., assume jerk is constant over the first 0.1s interval)
-    df['jerk'] = df['jerk'].bfill()
+    # replace NaNs with next value (assume constant)
+    df[['jerk', 'angular_velocity']] = df[['jerk', 'angular_velocity']].bfill()
+    # drop temp cols
+    df.drop(['a_diff', 'o_diff'], axis=1, inplace=True)
 
-    ### generate angular velocity [deg/s]
-    # NOTE: Data grouped by game_id, play_id, nfl_id to ensure angular velocity is calculated per player per play
-    # calculate angular velocity for all rows naively
-    df['angular_velocity'] = df['o'].diff() / 0.1
-    # identify rows with frame_ids > 1 for each player in each play in each game with same_sequence above
-    df['angular_velocity'].loc[~same_sequence] = pd.NA
-    # fill NA values with next frame's angular velocity value (i.e., assume angular velocity is constant over the first 0.1s interval)
-    df['angular_velocity'] = df['angular_velocity'].bfill()
+    ##### Rolling Metrics #####
+    if verbose:
+        print('---Generating Rolling Metrics---')
 
-    ### generate path curvature [1/yd]
-    ang_velo_rad = df['angular_velocity'] * (np.pi / 180)  # Convert degrees to radians
-    speed_nonzero = df['s'].replace(0, np.nan)  # Replace 0 speed with NaN to avoid division by zero
-    df['path_curvature'] = ang_velo_rad / speed_nonzero
-    # Fill NaN values (from 0 speed) with 0 curvature (i.e., assume straight path when stationary)
-    df['path_curvature'] = df['path_curvature'].fillna(0)
+    ### generate rolling std for velocity
+    grouped = df.groupby(group_keys, group_keys=False)
+    df['rolling_x_velocity_std'] = grouped['x_velocity'].rolling(window=Config.HISTORY_WINDOW, min_periods=1).std().reset_index(level=[0,1,2], drop=True)
+    df['rolling_y_velocity_std'] = grouped['y_velocity'].rolling(window=Config.HISTORY_WINDOW, min_periods=1).std().reset_index(level=[0,1,2], drop=True)
+
+    ### generate rolling mean/std for acceleration
+    df['rolling_a_std'] = grouped['a'].rolling(window=Config.HISTORY_WINDOW, min_periods=1).std().reset_index(level=[0,1,2], drop=True)
+
+    # fill NaNs with zeros
+    for col in ['rolling_x_velocity_std', 'rolling_y_velocity_std', 'rolling_a_std']:
+        df.fillna({col: 0.0}, inplace=True)
 
     #############################
     ### Spatial Relationships ###
     #############################
+    if verbose:
+        print('---Generating Spatial Relationships---')
 
     ### generate euclidean distance to ball_land [yd]
-    df['euclidean_dist_to_ball_land'] = np.sqrt(
-        (df['x_input'] - df['ball_land_x'])**2 + (df['y_input'] - df['ball_land_y'])**2
-    )
-    
+    dx = df['ball_land_x'] - df['x']
+    dy = df['ball_land_y'] - df['y']
+    df['dist_to_ball_land'] = np.hypot(dx, dy)
+
     ### generate distance from line of scrimmage [yd]
     # NOTE: with standardized play direction, positive values indicate distance downfield
-    df['dist_from_los'] = df['x_input'] - df['absolute_yardline_number']
+    df['dist_from_los'] = df['x'] - df['absolute_yardline_number']
 
     ### generate bearing to ball_land [deg]
-    delta_x = df['ball_land_x'] - df['x_input']
-    delta_y = df['ball_land_y'] - df['y_input']
-    bearing_rad = np.arctan2(delta_y, delta_x)  # Bearing in radians
-    bearing_deg = np.degrees(bearing_rad)  # Convert to degrees
-    df['bearing_to_ball_land'] = (bearing_deg + 360) % 360  # Normalize to [0, 360)
+    bearing_deg = np.degrees(np.arctan2(dx, dy))       # bearing in deg
+    df['bearing_to_ball_land'] = (bearing_deg + 360) % 360 # normalize to [0, 360) 0° along +y, 90° along +x
 
     ### generate bearing diff between player orientation and bearing to ball_land [deg]
-    bearing_diff_raw = df['o'] - df['bearing_to_ball_land']
-    # normalize to [-180, 180]
-    df['bearing_diff'] = ((bearing_diff_raw + 180) % 360) - 180
-    
+    df['bearing_diff_o'] = ((df['o'] - bearing_deg + 180) % 360) - 180    # normalize to [-180, 180]
+
     ### generate bearing diff between player direction and bearing to ball_land [deg]
-    bearing_diff_dir_raw = df['dir'] - df['bearing_to_ball_land']
-    # normalize to [-180, 180]
-    df['bearing_diff_dir'] = ((bearing_diff_dir_raw + 180) % 360) - 180
+    df['bearing_diff_dir'] = ((df['dir'] - bearing_deg + 180) % 360) - 180
+
+    if verbose:
+        print('---Feature Engineering Complete---')
+
+    return df
 
