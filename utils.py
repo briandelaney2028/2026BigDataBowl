@@ -48,6 +48,14 @@ class Config:
     EPOCHS = 10
     ETA = 1e-4
     GRAD_CLIP_NORM = 1.0
+    # advanced
+    EARLY_STOPPING = True
+    PATIENCE = 20
+    MIN_DELTA = 1e-4
+    WARMUP_EPOCHS = 3
+    ETA_FACTOR = 0.5
+    ETA_PATIENCE = 10
+    ETA_MIN = 1e-6
 
     # Datset Info
 
