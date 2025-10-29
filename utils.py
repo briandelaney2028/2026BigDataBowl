@@ -56,7 +56,8 @@ class TransformerConfig:
 
 @dataclass
 class DatasetConfig:
-    data_dir: str = "Data/"         # data directory
+    data_dir: str = 'Data/'         # data directory
+    saves_dir: str = 'Saves/'        # model and scalers directory
     data_fraction: float = 1.0      # fraction of data to sequence
     min_players: int = 7            # min number of valid players to sequence
     history_window: int = 5         # window for average metrics

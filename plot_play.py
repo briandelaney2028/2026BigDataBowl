@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import matplotlib.patches as patches
+import os
 from feature_engineering import engineer_features
 from data_sequencing import generate_sequences_4D
 from train import reconstruct_absolute_from_deltas
@@ -210,8 +211,13 @@ if __name__ == '__main__':
     df_input = engineer_features(invert_direction(df_input), cfg.dataset)
     df_output = invert_direction(map_play_direction(df_input, df_output))
     
-    model = torch.load('test_gnn_enhncd_train.pth')
-    scaler = FeatureScaler.load('test_gnn_scaler_enhncd_train.pkl')
+    model_folder = os.path.join(cfg.dataset.saves_dir, 'Models/')
+    model_path = os.path.join(model_folder, 'test_gnn_enhncd_train.pth')
+    scaler_folder = os.path.join(cfg.dataset.saves_dir, 'Scalers/')
+    scaler_path = os.path.join(scaler_folder, 'test_gnn_scaler_enhncd_train.pkl')
+
+    model = torch.load(model_path)
+    scaler = FeatureScaler.load(scaler_path)
 
     plot_play(df_input, df_output, 2023112300, 55, model, scaler, cfg)
     plot_play(df_input, df_output, 2023090700, 1711, model, scaler, cfg)

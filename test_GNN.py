@@ -10,6 +10,7 @@ from FeatureScaler import FeatureScaler
 from train import Trainer, prepare_targets_as_deltas, masked_mse_loss, collate_default, masked_FDE_loss
 from Transformers import GNNTransformer
 from typing import Union, List, Dict
+import os
 
 def evaluate_model(
         model: torch.nn.Module,
@@ -98,10 +99,11 @@ utils.set_seed(cfg.training.seed)
 # # y_mask shows where padded timesteps are in y_data
 # X, y, player_mask, target_mask, y_mask, ids = generate_sequences_4D(df_input, cfg.dataset, df_output=df_output,
 #                       sequence_length=10, data_fraction=1.0)
-# np.savez('GNNtransformer_data.npz', X=X, y=y, player_mask=player_mask, target_mask=target_mask, y_mask=y_mask, ids=ids)
+save_path = os.path.join(cfg.dataset.data_dir, 'Saves/GNNtransformer_data.npz')
+# np.savez(save_path, X=X, y=y, player_mask=player_mask, target_mask=target_mask, y_mask=y_mask, ids=ids)
 
 # Load data
-data = np.load('GNNtransformer_data.npz', allow_pickle=True)
+data = np.load(save_path, allow_pickle=True)
 X, y, player_mask, target_mask, y_mask, ids = data['X'], data['y'], data['player_mask'], data['target_mask'], data['y_mask'], data['ids']
 
 # Make Train-Test split
@@ -184,8 +186,14 @@ trainer = Trainer(
 
 )
 trained_gnn_transformer, transformer_history = trainer.fit()
-torch.save(trained_gnn_transformer, 'test_gnn_enhncd_train.pth')
-scaler.save('test_gnn_scaler_enhncd_train.pkl')
+
+model_folder = os.path.join(cfg.dataset.saves_dir, 'Models/')
+model_path = os.path.join(model_folder, 'test_gnn_enhncd_train.pth')
+scaler_folder = os.path.join(cfg.dataset.saves_dir, 'Scalers/')
+scaler_path = os.path.join(scaler_folder, 'test_gnn_scaler_enhncd_train.pkl')
+
+torch.save(trained_gnn_transformer, model_path)
+scaler.save(scaler_path)
 
 loss_fns = [masked_mse_loss, masked_FDE_loss]
 evaluate_model(
