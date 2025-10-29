@@ -28,9 +28,7 @@ def estimate_angle_diff(angle_hist: np.ndarray) -> float:
 
 def generate_sequences_4D(
         df_input:pd.DataFrame, cfg: DatasetConfig, df_output:pd.DataFrame=None,
-        test_template:pd.DataFrame=None, is_training=True,
-        sequence_length:int=5, data_fraction:float=1.0,
-        min_players: int=7
+        test_template:pd.DataFrame=None, is_training=True
                        )->tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Prepare all features for sequential model training or testing
@@ -41,10 +39,6 @@ def generate_sequences_4D(
         df_output (pd.DataFrame, optional): Output DataFrame. Defaults to None.
         test_template (pd.DataFrame, optional): Prediction template. Defaults to None.
         is_training (bool): switch for training purposes. Defaults to True.
-        sequence_length (int): number of time frames to use for training. Defaults
-            to 5 (smallest sequence in dataset).
-        data_fraction (float): fraction of data to use for training. Defaults to 1.0.
-        min_players (int): minimum number of valid players required per play to include
         
     Returns:
         X (np.ndarray): (B, N, T_in, F)
@@ -86,21 +80,21 @@ def generate_sequences_4D(
         N = len(players)
         
         # check against minimum
-        if N < min_players:
+        if N < cfg.min_players:
             skipped += 1
             continue
 
         # init containers
-        X_play = np.full((N_max, sequence_length, len(cfg.features)), np.nan, dtype=np.float32)
+        X_play = np.full((N_max, cfg.sequence_length, len(cfg.features)), np.nan, dtype=np.float32)
         player_mask = np.zeros(N_max, dtype=bool)
         target_mask = np.zeros(N_max, dtype=bool)
         ids_play = np.full((N_max), np.nan, dtype=np.float32)
 
         # fill per-player sequences
         for i, nflid in enumerate(players):
-            player_seq = player_groups[nflid].tail(sequence_length)
+            player_seq = player_groups[nflid].tail(cfg.sequence_length)
             seq = player_seq[cfg.features].to_numpy(dtype=np.float32)
-            pad_len = sequence_length - len(seq)
+            pad_len = cfg.sequence_length - len(seq)
             if pad_len > 0:
                 seq = np.vstack([np.full((pad_len, len(cfg.features)), np.nan, dtype=np.float32), seq])
             X_play[i, :, :] = seq
@@ -185,7 +179,7 @@ def generate_sequences_4D(
             print(f"Processed {(idx + 1) / total_plays * 100:.0f}% of plays")
 
         # check against data fraction
-        if data_fraction < 1.0 and (idx+1) / total_plays >= data_fraction:
+        if cfg.data_fraction < 1.0 and (idx+1) / total_plays >= cfg.data_fraction:
             break
 
     # convert to ndarrys

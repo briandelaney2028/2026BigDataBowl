@@ -18,56 +18,56 @@ from dataclasses import dataclass, field
 
 @dataclass
 class OptimizerConfig:
-    lr: float = 3e-4
-    betas: tuple = (0.9, 0.98)
-    eps: float = 1e-9
-    weight_decay: float = 1e-4
+    lr: float = 3e-4            # learning rate
+    betas: tuple = (0.9, 0.98)  # Adam beta values
+    eps: float = 1e-9           # Adam stability term
+    weight_decay: float = 1e-4  # Adam L2 penalty
 
 @dataclass
 class SchedulerConfig:
-    warmup_epochs: int = 5
-    lr_factor: float = 0.5
-    patience: int = 8
-    min_lr: float = 1e-6
+    warmup_epochs: int = 5      # num warmup epochs
+    lr_factor: float = 0.5      # how much LR is reduced ReduceLROnPlateau
+    patience: int = 8           # how long to wait before reducing LR
+    min_lr: float = 1e-6        # minimum value for LR
 
 @dataclass
 class TrainingConfig:
-    epochs: int = 200
-    batch_size: int = 32
-    grad_clip_norm: float = 1.0
-    early_stopping: bool = True
-    early_stopping_patience: int = 16
-    min_delta: float = 1e-4
+    epochs: int = 200                   # number epochs if no early stopping
+    batch_size: int = 32                # batch size
+    grad_clip_norm: float = 1.0         # gradient clipping norm value
+    early_stopping: bool = True         # whether early stopping
+    early_stopping_patience: int = 16   # how long to wait w/o improvement before stopping
+    min_delta: float = 1e-4             # minimum improvement necessary 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    seed: int = 42
+    seed: int = 42      # random seed
 
 @dataclass
 class TransformerConfig:
-    d_model: int = 128
-    nhead: int = 8
-    num_encoder_layers: int = 3
-    num_decoder_layers: int = 3
-    dim_feedforward: int = 256
-    dropout: float = 0.1
-    max_len: int = 500
-    pad_embedding_scale: float = 0.1
-    gnn_nhead: int = 4
+    d_model: int = 128                  # model internal dimension
+    nhead: int = 8                      # number of transformer attention heads
+    num_encoder_layers: int = 3         # num encoder layers
+    num_decoder_layers: int = 3         # num decoder layers
+    dim_feedforward: int = 256          # FFN dimension
+    dropout: float = 0.1                # dropout fraction
+    max_len: int = 500                  # max length of encodings
+    pad_embedding_scale: float = 0.1    # scale for leanred pad embedding init
+    gnn_nhead: int = 4                  # number of multi-agent GNN attention heads
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 @dataclass
 class DatasetConfig:
-    data_dir: str = "Data/"
-    data_fraction: float = 1.0
-    min_players: int = 7
-    history_window: int = 5
-    sequence_length: int = 10
-    target_features: bool = False
-    dt: float = 0.1
-
+    data_dir: str = "Data/"         # data directory
+    data_fraction: float = 1.0      # fraction of data to sequence
+    min_players: int = 7            # min number of valid players to sequence
+    history_window: int = 5         # window for average metrics
+    sequence_length: int = 10       # input sequence length T_in
+    target_features: bool = False   # whether to have GNNTransformer decode synthetic features
+    dt: float = 0.1                 # time between frames
+    # ID columns
     id_cols: list = field(default_factory=lambda: [
         "game_id", "play_id", "nfl_id"
     ])
-
+    # Features fed into GNNTransformer
     features: list = field(default_factory=lambda: [
         "x", "y", "absolute_yardline_number", "player_height", "num_frames_output",
         "player_weight", "s", "a", "dir", "o", "ball_land_x",
@@ -79,12 +79,12 @@ class DatasetConfig:
         "dist_from_los", "bearing_to_ball_land", "bearing_diff_o",
         "bearing_diff_dir", "frame_id"
     ])
-
+    # Features with angular dimensions
     angle_features: list = field(default_factory=lambda: [
         "dir", "o", "angle_diff", "bearing_to_ball_land",
         "bearing_diff_o", "bearing_diff_dir"
     ])
-
+    # Features needing scaling
     scaled_features: list = field(default_factory=lambda: [
         "absolute_yardline_number", "player_height", "player_weight",
         "x", "y", "s", "a", "ball_land_x", "ball_land_y", "player_bmi",
