@@ -12,6 +12,9 @@ from Transformers import GNNTransformer
 from typing import Union, List, Dict
 import os
 
+
+
+
 def evaluate_model(
         model: torch.nn.Module,
         test_loader: DataLoader,
@@ -88,23 +91,29 @@ cfg = Config()
 
 utils.set_seed(cfg.training.seed)
     
-# df_input, df_output, _, _ = utils.load_prediction_data(cfg.dataset)
-# df_input['player_height'] = df_input['player_height'].apply(utils.height_to_inches)
-# df_input = engineer_features(utils.invert_direction(df_input), cfg.dataset)
-# df_output = utils.invert_direction(utils.map_play_direction(df_input, df_output))
+df_input, df_output, _, _ = utils.load_prediction_data(cfg.dataset)
+df_input['player_height'] = df_input['player_height'].apply(utils.height_to_inches)
+df_input = engineer_features(utils.invert_direction(df_input), cfg.dataset)
+df_output = utils.invert_direction(utils.map_play_direction(df_input, df_output))
 
-# # get X, y
-# # player_mask shows where padded players are
-# # target_mask shows who has y data
-# # y_mask shows where padded timesteps are in y_data
-# X, y, player_mask, target_mask, y_mask, ids = generate_sequences_4D(df_input, cfg.dataset, df_output=df_output,
-#                       sequence_length=10, data_fraction=1.0)
-save_path = os.path.join(cfg.dataset.data_dir, 'Saves/GNNtransformer_data.npz')
-# np.savez(save_path, X=X, y=y, player_mask=player_mask, target_mask=target_mask, y_mask=y_mask, ids=ids)
+# get X, y
+# player_mask shows where padded players are
+# target_mask shows who has y data
+# y_mask shows where padded timesteps are in y_data
+save_path = os.path.join(cfg.dataset.data_dir, 'Saves', 'GNNtransformer_data.npz')
+required_keys = ['X', 'y', 'player_mask', 'target_mask', 'y_mask', 'ids']
+data = utils.load_saved_data(save_path, required_keys)
 
-# Load data
-data = np.load(save_path, allow_pickle=True)
-X, y, player_mask, target_mask, y_mask, ids = data['X'], data['y'], data['player_mask'], data['target_mask'], data['y_mask'], data['ids']
+# If loading failed, generate and save new data
+if data is None:
+    print('[INFO] Generating new data sequences...')
+    X, y, player_mask, target_mask, y_mask, ids = generate_sequences_4D(df_input, cfg.dataset, df_output=df_output)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    np.savez(save_path, X=X, y=y, player_mask=player_mask, target_mask=target_mask, y_mask=y_mask, ids=ids)
+    print('[INFO] Data saved successfully to {save_path}')
+else:
+    X, y, player_mask, target_mask, y_mask, ids = data['X'], data['y'], data['player_mask'], data['target_mask'], data['y_mask'], data['ids']
+print('[INFO] Data ready for use.')
 
 # Make Train-Test split
 X_train, X_temp, y_train, y_temp, player_mask_train, player_mask_temp, target_mask_train, target_mask_temp, y_mask_train, y_mask_temp = train_test_split(

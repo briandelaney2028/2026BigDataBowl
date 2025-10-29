@@ -260,6 +260,32 @@ def map_play_direction(df_input, df_output):
 
     return merged
 
+def load_saved_data(save_path: str, required_keys: tuple[str]):
+    """
+    Attempt to load existing data
+
+    Parameters:
+        save_path (str): path to saved data
+        required_keys (list[str]): necessary keys in saved data
+
+    Returns:
+        (tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]) or None:
+            will return data if it checks out else None
+    """
+    if not os.path.exists(save_path):
+        print(f'[INFO] Save file not found at {save_path}. Generating new data...')
+        return None
+    try:
+        data = np.load(save_path, allow_pickle=True)
+        if not all(k in data.keys() for k in required_keys):
+            print('[WARNING] Save file missing required keys. Regenerating data...')
+            return None
+        print(f'[INFO] Loaded data successfully from {save_path}')
+        return data
+    except Exception as e:
+        print(f'[ERROR] Failed to load save file ({e}). Regenerating data...')
+        return None
+
 if __name__=='__main__':
     df_train = load_prediction_data(method='left', temporal=True)
     print(df_train[df_train['play_direction'] == 'left'].loc[:1000:50, ['absolute_yardline_number', 'player_name', 'x_input', 'o', 'ball_land_x', 'y_target']])
