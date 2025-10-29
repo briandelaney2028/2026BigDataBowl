@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from utils import Config
+from utils import DatasetConfig
 
 
 def estimate_angle_diff(angle_hist: np.ndarray) -> float:
@@ -27,16 +27,17 @@ def estimate_angle_diff(angle_hist: np.ndarray) -> float:
     return mean_deg
 
 def generate_sequences_4D(
-        df_input:pd.DataFrame, df_output:pd.DataFrame=None,
+        df_input:pd.DataFrame, cfg: DatasetConfig, df_output:pd.DataFrame=None,
         test_template:pd.DataFrame=None, is_training=True,
         sequence_length:int=5, data_fraction:float=1.0,
-        min_players: int=7, target_features:bool = False
+        min_players: int=7
                        )->tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Prepare all features for sequential model training or testing
 
     Parameters:
         df_input (pd.DataFrame): Input DataFrame
+        cfg (DatasetConfig): dataset configuration
         df_output (pd.DataFrame, optional): Output DataFrame. Defaults to None.
         test_template (pd.DataFrame, optional): Prediction template. Defaults to None.
         is_training (bool): switch for training purposes. Defaults to True.
@@ -44,7 +45,7 @@ def generate_sequences_4D(
             to 5 (smallest sequence in dataset).
         data_fraction (float): fraction of data to use for training. Defaults to 1.0.
         min_players (int): minimum number of valid players required per play to include
-        target_features (float): controls whether y arrays contain output features
+        
     Returns:
         X (np.ndarray): (B, N, T_in, F)
         y (np.ndarray or None): Target sequences (B, N, T_out, out_features),
@@ -62,13 +63,13 @@ def generate_sequences_4D(
     assert not (df_output is None and test_template is None), "No Target DataFrame provided"
 
     # sorting
-    df_input.sort_values(by=Config.ID_COLS + ['frame_id'], inplace=True)
-    df_target.sort_values(by=Config.ID_COLS + ['frame_id'], inplace=True)
+    df_input.sort_values(by=cfg.id_cols + ['frame_id'], inplace=True)
+    df_target.sort_values(by=cfg.id_cols + ['frame_id'], inplace=True)
 
     # grouping
     input_groups = dict(tuple(df_input.groupby(['game_id', 'play_id'], sort=False)))
     if is_training:
-        output_groups = dict(tuple(df_output.groupby(Config.ID_COLS, sort=False)))
+        output_groups = dict(tuple(df_output.groupby(cfg.id_cols, sort=False)))
     total_plays = len(input_groups.keys())
     print(f"Begin sequencing {total_plays} plays in input data")
 
@@ -90,7 +91,7 @@ def generate_sequences_4D(
             continue
 
         # init containers
-        X_play = np.full((N_max, sequence_length, len(Config.FEATURES)), np.nan, dtype=np.float32)
+        X_play = np.full((N_max, sequence_length, len(cfg.features)), np.nan, dtype=np.float32)
         player_mask = np.zeros(N_max, dtype=bool)
         target_mask = np.zeros(N_max, dtype=bool)
         ids_play = np.full((N_max), np.nan, dtype=np.float32)
@@ -98,10 +99,10 @@ def generate_sequences_4D(
         # fill per-player sequences
         for i, nflid in enumerate(players):
             player_seq = player_groups[nflid].tail(sequence_length)
-            seq = player_seq[Config.FEATURES].to_numpy(dtype=np.float32)
+            seq = player_seq[cfg.features].to_numpy(dtype=np.float32)
             pad_len = sequence_length - len(seq)
             if pad_len > 0:
-                seq = np.vstack([np.full((pad_len, len(Config.FEATURES)), np.nan, dtype=np.float32), seq])
+                seq = np.vstack([np.full((pad_len, len(cfg.features)), np.nan, dtype=np.float32), seq])
             X_play[i, :, :] = seq
             player_mask[i] = True
             target_mask[i] = bool(player_seq.iloc[-1]['player_to_predict'])
@@ -116,7 +117,7 @@ def generate_sequences_4D(
         # prepare target sequence if training
         if is_training:
             # just target x, y data
-            if not target_features:
+            if not cfg.target_features:
                 y_dict = {nflid: output_groups[(gid,pid,nflid)][['x','y']].to_numpy(dtype=np.float32)
                           for nflid in players if (gid,pid,nflid) in output_groups}
                 max_ylen = max((len(v) for v in y_dict.values()), default=0)
@@ -177,7 +178,7 @@ def generate_sequences_4D(
             #     # compute displacement for each output frame
             #     y_engineered = y_engineered.assign(x=y_engineered['x'] - df_sequence['x'].iloc[-1],
             #                                        y=y_engineered['y'] - df_sequence['y'].iloc[-1])
-            #     y_list.append(y_engineered[Config.FEATURES].to_numpy())
+            #     y_list.append(y_engineered[cfg.features].to_numpy())
 
         # report out
         if (idx + 1) % max(1, total_plays // 10) == 0:

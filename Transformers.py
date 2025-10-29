@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import math
-from utils import Config
+from utils import TransformerConfig
 
 
 class PositionalEncoding(nn.Module):
@@ -78,14 +78,14 @@ class Transformer(nn.Module):
     """
 
     def __init__(self, input_size: int, output_size: int, 
-                 d_model: int = Config.D_MODEL, 
-                 nhead: int = Config.NHEAD,
-                 num_encoder_layers: int = Config.NUM_ENCODER_LAYERS, 
-                 num_decoder_layers: int = Config.NUM_DECODER_LAYERS,
-                 dim_feedforward: int = Config.DIM_FEEDFORWARD, 
-                 dropout: float = Config.DROPOUT, 
-                 max_len: int = Config.MAX_LEN,
-                 pad_embedding_scale: float = Config.PAD_EMBEDDING_SCALE
+                 d_model: int, 
+                 nhead: int,
+                 num_encoder_layers: int, 
+                 num_decoder_layers: int,
+                 dim_feedforward: int, 
+                 dropout: float, 
+                 max_len: int,
+                 pad_embedding_scale: float
         ):
         super().__init__()
         self.input_size = input_size
@@ -450,49 +450,39 @@ class GNNTransformer(nn.Module):
     d_model : int, optional
         Hidden embedding dimension passed to the Transformer (default 128).
     """
-    def __init__(self, in_feats: int, output_size: int, 
-                 gnn_heads: int = Config.GNN_NHEAD, 
-                 d_model: int = Config.D_MODEL, 
-                 nhead: int = Config.NHEAD,
-                 num_encoder_layers: int = Config.NUM_ENCODER_LAYERS, 
-                 num_decoder_layers: int = Config.NUM_DECODER_LAYERS,
-                 dim_feedforward: int = Config.DIM_FEEDFORWARD, 
-                 dropout: float = Config.DROPOUT, 
-                 max_len: int = Config.MAX_LEN,
-                 pad_embedding_scale: float = Config.PAD_EMBEDDING_SCALE,
-                 device: str = Config.DEVICE
-        ):
+    def __init__(self, in_feats: int, output_size: int,
+                 cfg: TransformerConfig):
         """
         in_feats: number of input features per player
         output_size: dimension of model output per timestep (e.g., 2 for dx,dy)
         d_model: hidden dim
         """
         super().__init__()
-        self.device = device
+        self.device = cfg.device
         self.in_feats = in_feats
         self.output_size = output_size
-        self.d_model = d_model
+        self.d_model = cfg.d_model
 
         # Frame GNN
         self.frame_gnn = FrameGNN(
             in_feats=in_feats, 
-            d_model=d_model,
-            n_heads=gnn_heads, 
-            attn_dropout=dropout
+            d_model=cfg.d_model,
+            n_heads=cfg.gnn_nhead, 
+            attn_dropout=cfg.dropout
         )
 
         # instantiate the base Transformer class
         self.transformer = Transformer(
-            input_size=d_model,
+            input_size=cfg.d_model,
             output_size=output_size,
-            d_model=d_model,
-            nhead=nhead,
-            num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            max_len=max_len,
-            pad_embedding_scale=pad_embedding_scale
+            d_model=cfg.d_model,
+            nhead=cfg.nhead,
+            num_encoder_layers=cfg.num_encoder_layers,
+            num_decoder_layers=cfg.num_decoder_layers,
+            dim_feedforward=cfg.dim_feedforward,
+            dropout=cfg.dropout,
+            max_len=cfg.max_len,
+            pad_embedding_scale=cfg.pad_embedding_scale
         )
 
     @staticmethod

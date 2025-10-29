@@ -1,15 +1,16 @@
 import pandas as pd
 import numpy as np
-from utils import height_to_inches, Config
+from utils import height_to_inches, DatasetConfig
 
 
-def engineer_features(df: pd.DataFrame, verbose=True) -> pd.DataFrame:
+def engineer_features(df: pd.DataFrame, cfg: DatasetConfig, verbose=True) -> pd.DataFrame:
     """
     Engineers revised set of new features for the given DataFrame.
     NOTE: Coordinate system 0 deg is along y-axis and increases clockwise
 
     Parameters:
         df (pd.DataFrame): Input DataFrame
+        cfg (DatasetConfig): dataset configuration
         verbose (bool): Whether to print progress messages
     Returns:
         df (pd.DataFrame): Transformed DataFrame
@@ -77,11 +78,11 @@ def engineer_features(df: pd.DataFrame, verbose=True) -> pd.DataFrame:
 
     ### generate rolling std for velocity
     grouped = df.groupby(group_keys, group_keys=False)
-    df['rolling_x_velocity_std'] = grouped['x_velocity'].rolling(window=Config.HISTORY_WINDOW, min_periods=1).std().reset_index(level=[0,1,2], drop=True)
-    df['rolling_y_velocity_std'] = grouped['y_velocity'].rolling(window=Config.HISTORY_WINDOW, min_periods=1).std().reset_index(level=[0,1,2], drop=True)
+    df['rolling_x_velocity_std'] = grouped['x_velocity'].rolling(window=cfg.history_window, min_periods=1).std().reset_index(level=[0,1,2], drop=True)
+    df['rolling_y_velocity_std'] = grouped['y_velocity'].rolling(window=cfg.history_window, min_periods=1).std().reset_index(level=[0,1,2], drop=True)
 
     ### generate rolling mean/std for acceleration
-    df['rolling_a_std'] = grouped['a'].rolling(window=Config.HISTORY_WINDOW, min_periods=1).std().reset_index(level=[0,1,2], drop=True)
+    df['rolling_a_std'] = grouped['a'].rolling(window=cfg.history_window, min_periods=1).std().reset_index(level=[0,1,2], drop=True)
 
     # fill NaNs with zeros
     for col in ['rolling_x_velocity_std', 'rolling_y_velocity_std', 'rolling_a_std']:

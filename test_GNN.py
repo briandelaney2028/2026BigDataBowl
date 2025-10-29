@@ -1,31 +1,32 @@
 import torch
-from torch.utils.data import TensorDataset
+from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 from sklearn.model_selection import train_test_split
 import utils
 from utils import Config
 from feature_engineering import engineer_features
+from data_sequencing import generate_sequences_4D
 from FeatureScaler import FeatureScaler
-from train import prepare_targets_as_deltas, train_gnn_transformer
+from train import Trainer, prepare_targets_as_deltas, masked_mse_loss, collate_default
 from Transformers import GNNTransformer
 from plot_play import plot_play
 
 
+cfg = Config()
 
-
-utils.set_seed(Config.SEED)
+utils.set_seed(cfg.training.seed)
     
-# df_input, df_output, _, _ = utils.load_prediction_data()
+# df_input, df_output, _, _ = utils.load_prediction_data(cfg.dataset)
 # df_input['player_height'] = df_input['player_height'].apply(utils.height_to_inches)
-# df_input = engineer_features(utils.invert_direction(df_input))
+# df_input = engineer_features(utils.invert_direction(df_input), cfg.dataset)
 # df_output = utils.invert_direction(utils.map_play_direction(df_input, df_output))
 
 # # get X, y
 # # player_mask shows where padded players are
 # # target_mask shows who has y data
 # # y_mask shows where padded timesteps are in y_data
-# X, y, player_mask, target_mask, y_mask, ids = generate_sequences_4D(df_input, df_output=df_output,
-#                       sequence_length=10, data_fraction=1.0, target_features=TARGET_FEATURES)
+# X, y, player_mask, target_mask, y_mask, ids = generate_sequences_4D(df_input, cfg.dataset, df_output=df_output,
+#                       sequence_length=10, data_fraction=1.0)
 # np.savez('GNNtransformer_data.npz', X=X, y=y, player_mask=player_mask, target_mask=target_mask, y_mask=y_mask, ids=ids)
 
 # Load data
@@ -34,19 +35,19 @@ X, y, player_mask, target_mask, y_mask, ids = data['X'], data['y'], data['player
 
 # Make Train-Test split
 X_train, X_temp, y_train, y_temp, player_mask_train, player_mask_temp, target_mask_train, target_mask_temp, y_mask_train, y_mask_temp = train_test_split(
-    X, y, player_mask, target_mask, y_mask, test_size=0.3, random_state=42
+    X, y, player_mask, target_mask, y_mask, test_size=0.3, random_state=cfg.training.seed
 )
 
 # Make Validation-Test split
 X_val, X_test, y_val, y_test, player_mask_val, player_mask_test, target_mask_val, target_mask_test, y_mask_val, y_mask_test = train_test_split(
-    X_temp, y_temp, player_mask_temp, target_mask_temp, y_mask_temp, test_size=0.3, random_state=42
+    X_temp, y_temp, player_mask_temp, target_mask_temp, y_mask_temp, test_size=0.3, random_state=cfg.training.seed
 )
 # Scale Features
-scaler = FeatureScaler(feature_names=Config.FEATURES, method='standard', angle_features=Config.ANGLE_FEATURES)
-X_train_scaled = scaler.fit_transform(X_train, Config.SCALED_FEATURES)
+scaler = FeatureScaler(feature_names=cfg.dataset.features, method='standard', angle_features=cfg.dataset.angle_features)
+X_train_scaled = scaler.fit_transform(X_train, cfg.dataset.scaled_features)
 X_val_scaled = scaler.transform(X_val)
 X_test_scaled = scaler.transform(X_test)
-if not Config.TARGET_FEATURES:
+if not cfg.dataset.target_features:
     y_train_scaled = scaler.transform(y_train, ['x', 'y'])
     y_val_scaled = scaler.transform(y_val, ['x', 'y'])
     y_test_scaled = scaler.transform(y_test, ['x', 'y'])
@@ -86,16 +87,21 @@ input_size = X_train_scaled.shape[-1]
 output_size = y_train_deltas.shape[-1]
 gnn_transformer = GNNTransformer(
     in_feats=input_size,
-    output_size=output_size
+    output_size=output_size,
+    cfg=cfg.transformer
 )
 print("Model:", gnn_transformer)
-trained_gnn_transformer, transformer_history = train_gnn_transformer(
-    gnn_transformer, 
-    train_dataset, 
-    val_dataset=val_dataset,
-    batch_size=32, 
-    epochs=10
-)
 
-torch.save(trained_gnn_transformer, 'test_gnn.pth')
-scaler.save('test_gnn_scaler.pkl')
+train_loader = DataLoader(train_dataset, batch_size=cfg.training.batch_size, shuffle=True,  collate_fn=collate_default)
+val_loader   = DataLoader(  val_dataset, batch_size=cfg.training.batch_size, shuffle=False, collate_fn=collate_default)
+trainer = Trainer(
+    model=gnn_transformer,
+    loss_fn = masked_mse_loss,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    cfg=cfg,
+
+)
+trained_gnn_transformer, transformer_history = trainer.fit()
+torch.save(trained_gnn_transformer, 'test_gnn_enhncd_train.pth')
+scaler.save('test_gnn_scalern_enhncd_train.pkl')

@@ -1,10 +1,14 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 import time
-import copy
+from copy import deepcopy
+from dataclasses import asdict
+import os
 from utils import Config
+from Transformers import GNNTransformer
 
 
 def prepare_targets_as_deltas(y_abs, last_pos, player_mask):
@@ -156,65 +160,92 @@ def collate_default(batch):
     y_masks = torch.stack([b[4] for b in batch], dim=0)
     return Xs, ys, player_masks, target_masks, y_masks
 
-def train_gnn_transformer(
-        model: nn.Module,
-        train_dataset: TensorDataset,
-        val_dataset: TensorDataset = None,
-        batch_size: int = Config.BATCH_SIZE,
-        epochs: int = Config.EPOCHS,
-        lr: float = Config.ETA,
-        device: str = Config.DEVICE,
-        grad_clip_norm: float = Config.GRAD_CLIP_NORM,
-        verbose: bool = True
-):
-    """
-    Train a GNN Transformer with padded players, targets and loss masking
 
-    Parameters:
-        model (nn.Module): GNNTransformer: model(X_batch, y_inputs) during training (with y_inputs = shifted right)
-        train_dataset (TensorDataset): PyTorch dataset with X, y, and mask tensors
-        val_dataset (TensorDataset, optional): PyTorch dataset with X, y, and mask tensors for validation
-        batch_size (int): Batch size
-        epochs (int): Training epochs
-        lr (float): Learning Rate
-        device (str): 'cuda' or 'cpu'
-        grad_clip_norm (float): Gradient clipping norm
-        verbose (bool): Whether to print training progress
+class Trainer:
+    def __init__(self, 
+            model: GNNTransformer, 
+            loss_fn: callable, 
+            train_loader: DataLoader, 
+            val_loader: DataLoader, 
+            cfg: Config, 
+            log_dir: str = 'runs', 
+            logger=None
+        ):
+        """
+        Train a GNN Transformer with padded players, targets and loss masking.
+        Added: Early Stopping, warm up, adaptive LR scheduling on plateau
+
+        Args:
+            model (nn.Module)
+            loss_fn (callable)
+            train_loader (DataLoader)
+            val_loader (DataLoader)
+            cfg (Config): config with optimizer, scheduler, training attributes
+            log_dir (str): base directory for TensorBoard logs
+            logger (optional): wandb / tensorboard / custom logger
+        """
+        self.model = model
+        self.loss_fn = loss_fn
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.cfg = cfg
+        self.device = torch.device(cfg.training.device)
+        self.model.to(self.device)
+
+        self.optimizer = self._init_optimizer()
+        self.warmup_scheduler, self.plateau_scheduler = self._init_schedulers()
+
+        self.best_val_loss = float('inf')
+        self.epochs_no_improve = 0
+        self.start_time = time.time()
+        self.history = {'train_loss': [], 'val_loss': [], 'lr': []}
+
+        self.writer = logger or SummaryWriter(log_dir=os.path.join(log_dir, time.strftime("%Y%m%d-%H%M%S")))
+        self.log_dir = self.writer.log_dir
+        print(f'TensorBoard logs: {self.log_dir}')
+
+    def _init_optimizer(self):
+        opt_cfg = self.cfg.optimizer
+        return torch.optim.Adam(
+            self.model.parameters(),
+            lr=opt_cfg.lr,
+            betas=opt_cfg.betas,
+            eps=opt_cfg.eps,
+            weight_decay=opt_cfg.weight_decay,
+        )
     
-    Returns:
-        model (nn.Module): Trained model
-        history (dict): Training and validation loss history
-    """
+    def _init_schedulers(self):
+        """ create warmup and plateau schedulers """
+        sch_cfg = self.cfg.scheduler
 
-    device = torch.device(device)
-    model.to(device)
+        # Linear warmup scheduler
+        def lr_lambda(epoch):
+            if epoch < sch_cfg.warmup_epochs:
+                return float(epoch + 1) / sch_cfg.warmup_epochs
+            return 1.0
+        
+        warmup = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lr_lambda)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-9)
+        plateau = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode="min",
+            factor=sch_cfg.lr_factor,
+            patience=sch_cfg.patience,
+            min_lr=sch_cfg.min_lr,
+        )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_default)
-    val_loader = None
-    if val_dataset is not None:
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_default)
+        return warmup, plateau
     
-    history = {'train_loss': [], 'val_loss': []}
-    start_time = time.time()
-    
-    # train
-    for epoch in range(1, epochs+1):
-        epoch_start_time = time.time()
-        model.train()
-        total_se = 0.0
-        total_valid = 0
+    def train_one_epoch(self, epoch):
+        self.model.train()
+        total_loss, total_valid = 0.0, 0
 
-        for X_batch, y_batch, player_mask, target_mask, y_mask in train_loader:
-            # move to device
-            X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device)
-            player_mask = player_mask.to(device)
-            target_mask = target_mask.to(device)
-            y_mask = y_mask.to(device)
+        for batch in self.train_loader:
+            X_batch, y_batch, player_mask, target_mask, y_mask = [
+                t.to(self.device) for t in batch
+            ]
 
-            optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
 
             # construct decoder inputs: shift right with BOS = last observed frame
             B, N, T_out, F_out = y_batch.shape
@@ -223,181 +254,43 @@ def train_gnn_transformer(
             if torch.isnan(bos).any():
                 bos = torch.nan_to_num(bos, nan=0.0)
             y_inputs = torch.cat([bos, y_batch[:, :, :-1, :]], dim=2)
-            
+
             # forward
-            pred_deltas = model(
-                src=X_batch,
+            pred_deltas = self.model(
+                X_batch,
                 tgt_inputs=y_inputs,
                 player_mask=player_mask,
                 target_mask=target_mask,
                 y_mask=y_mask
             )
-            
-            # compute masked loss
-            loss = masked_mse_loss(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
-            
-            # backprop
+
+            # compute loss
+            loss = self.loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
+
+            # backward
             loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
-            optimizer.step()
-            
-            batch_valid = y_mask.sum().item()
-            total_se += loss.item() * batch_valid
-            total_valid += batch_valid
+            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.cfg.training.grad_clip_norm)
+            self.optimizer.step()
 
-        train_epoch_loss = total_se / max(1, total_valid)
-        history['train_loss'].append(train_epoch_loss)
+            total_loss += loss.item() * y_mask.sum().item()
+            total_valid += y_mask.sum().item()
 
-        # validation
-        val_epoch_loss = None
-        if val_loader is not None:
-            model.eval()
-            val_total_se = 0.0
-            val_total_valid = 0
-
-            with torch.no_grad():
-                for X_batch, y_batch, player_mask, target_mask, y_mask in val_loader:
-                    X_batch = X_batch.to(device)
-                    y_batch = y_batch.to(device)
-                    player_mask = player_mask.to(device)
-                    target_mask = target_mask.to(device)
-                    y_mask = y_mask.to(device)
-
-                    # decoder inputs
-                    B, N, T_out, F_out = y_batch.shape
-                    bos = X_batch[:, :, -1:, 0:F_out].clone()
-                    # may have introduced NaN values
-                    if torch.isnan(bos).any():
-                        bos = torch.nan_to_num(bos, nan=0.0)
-                    y_inputs = torch.cat([bos, y_batch[:, :, :-1, :]], dim=2)
-
-                    # forward using predict
-                    pred_deltas = model.predict(
-                        src=X_batch,
-                        future_len=T_out,
-                        player_mask=player_mask,
-                        target_mask=target_mask
-                    )
-                    
-                    val_loss = masked_mse_loss(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
-                    val_valid = y_mask.sum().item()
-                    val_total_se += val_loss.item() * val_valid
-                    val_total_valid += val_valid
-
-            val_epoch_loss = val_total_se / max(1.0, val_total_valid)
-            history['val_loss'].append(val_epoch_loss)
-
-        # log
-        epoch_time = time.time() - epoch_start_time
-        if verbose:
-            if val_epoch_loss is None:
-                print(f'[Epoch {epoch}/{epochs}] Train Loss={train_epoch_loss:.4e}; Time={epoch_time:.1f}s')
-            else:
-                print(f'[Epoch {epoch}/{epochs}] Train Loss={train_epoch_loss:.4e}; Val Loss={val_epoch_loss:.4e}; Time={epoch_time:.1f}s')
-
-    total_time = time.time() - start_time
-    if verbose:
-        print(f'Total Training Time: {total_time:.1f}s')
+        avg_loss = total_loss / max(1, total_valid)
+        self.history['train_loss'].append(avg_loss)
+        self.writer.add_scalar('Loss/Train', avg_loss, epoch)
+        return avg_loss
     
-    return model, history
+    @torch.no_grad()
+    def validate(self, epoch):
+        self.model.eval()
+        total_loss, total_valid = 0.0, 0
 
-def enhanced_gnn_train(
-    model: nn.Module,
-    train_dataset: TensorDataset,
-    val_dataset: TensorDataset = None,
-    batch_size: int = Config.BATCH_SIZE,
-    epochs: int = Config.EPOCHS,
-    lr: float = Config.ETA,
-    device: str = Config.DEVICE,
-    grad_clip_norm: float = Config.GRAD_CLIP_NORM,
-    verbose: bool = True,
-    early_stopping: bool = Config.EARLY_STOPPING,
-    patience_es: int = Config.PATIENCE,
-    min_delta: float = Config.MIN_DELTA,
-    warmup_epochs: int = Config.WARMUP_EPOCHS,
-    lr_factor: float = Config.ETA_FACTOR,
-    patience_lr: int = Config.ETA_PATIENCE,
-    min_lr: float = Config.ETA_MIN
-):
-    """
-    Train a GNN Transformer with padded players, targets and loss masking.
-    Added: Early Stopping, warm up, adaptive LR scheduling on plateau
+        for batch in self.val_loader:
+            X_batch, y_batch, player_mask, target_mask, y_mask = [
+                t.to(self.device) for t in batch
+            ]
 
-    Parameters:
-        model (nn.Module): GNNTransformer: model(X_batch, y_inputs) during training (with y_inputs = shifted right)
-        train_dataset (TensorDataset): PyTorch dataset with X, y, and mask tensors
-        val_dataset (TensorDataset, optional): PyTorch dataset with X, y, and mask tensors for validation
-        batch_size (int): Batch size
-        epochs (int): Training epochs
-        lr (float): Learning Rate
-        device (str): 'cuda' or 'cpu'
-        grad_clip_norm (float): Gradient clipping norm
-        verbose (bool): Whether to print training progress
-        early_stopping (bool): Whether to implement early stopping
-        patience_es (int): Number of epochs without improvement before stopping
-        min_delta (float):  minimum improvement necessary for a new best score
-        warmup_epochs (int): number of warmup epochs
-        lr_factor (float): factor by which the learning rate will be reduce
-        patience_lr (int): number of allowed epochs with no improvement after which lr is reduced
-        min_lr (float): minimum allowed lr
-
-    
-    Returns:
-        model (nn.Module): Trained model
-        history (dict): Training and validation loss history
-    """
-
-    device = torch.device(device)
-    model.to(device)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-9)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',
-        factor=lr_factor,
-        patience=patience_lr,
-        verbose=verbose,
-        min_lr=min_lr
-    )
-
-    # load data
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_default)
-    val_loader = None
-    if val_dataset is not None:
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_default)
-    
-    history = {'train_loss': [], 'val_loss': [], 'lr': []}
-
-    # early stopping variables
-    best_val_loss = float('inf')
-    best_state_dict = None
-    best_epoch = 0
-    epochs_no_improve = 0
-
-    start_time = time.time()
-    for epoch in range(1, epochs + 1):
-        epoch_start_time = time.time()
-        model.train()
-        total_se = 0.0
-        total_valid = 0
-
-        # Warm Up
-        if epoch <= warmup_epochs:
-            warmup_lr = lr * (epoch / warmup_epochs)
-            for g in optimizer.param_groups:
-                g['lr'] = warmup_lr
-        
-        # Training
-        for X_batch, y_batch, player_mask, target_mask, y_mask in train_loader:
-            X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device)
-            player_mask = player_mask.to(device)
-            target_mask = target_mask.to(device)
-            y_mask = y_mask.to(device)
-
-            optimizer.zero_grad()
-
-            # construct decoder inputs: shift right with BOS = last observed frame
+            # decoder inputs
             B, N, T_out, F_out = y_batch.shape
             bos = X_batch[:, :, -1:, 0:F_out].clone()
             # may have introduced NaN values
@@ -405,101 +298,70 @@ def enhanced_gnn_train(
                 bos = torch.nan_to_num(bos, nan=0.0)
             y_inputs = torch.cat([bos, y_batch[:, :, :-1, :]], dim=2)
 
-            # forward
-            pred_deltas = model(
-                X_batch,
-                tgt_inputs=y_inputs,
-                player_massk=player_mask,
-                target_mask=target_mask,
-                y_mask=y_mask
+            # forward using predict
+            pred_deltas = self.model.predict(
+                src=X_batch,
+                future_len=T_out,
+                player_mask=player_mask,
+                target_mask=target_mask
             )
-
-            # compute loss
-            loss = masked_mse_loss(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
-
-            # backward
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
-            optimizer.step()
-
-            total_se += loss.itme() * y_mask.sum().item()
+            
+            # loss and backward
+            val_loss = self.loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
+            total_loss += val_loss.item() * y_mask.sum().item()
             total_valid += y_mask.sum().item()
 
-        train_epoch_loss = total_se / max(1, total_valid)
-        history['train_loss'].append(train_epoch_loss)
-        current_lr = optimizer.param_groups[0]['lr']
-        history['lr'].append(current_lr)
-
-        # Validation
-        val_epoch_loss = None
-        if val_loader is not None:
-            model.eval()
-            val_total_se = 0.0
-            val_total_valid = 0
-
-            with torch.no_grad():
-                for X_batch, y_batch, player_mask, target_mask, y_mask in val_loader:
-                    X_batch = X_batch.to(device)
-                    y_batch = y_batch.to(device)
-                    player_mask = player_mask.to(device)
-                    target_mask = target_mask.to(device)
-                    y_mask = y_mask.to(device)
-
-                    # decoder inputs
-                    B, N, T_out, F_out = y_batch.shape
-                    bos = X_batch[:, :, -1:, 0:F_out].clone()
-                    # may have introduced NaN values
-                    if torch.isnan(bos).any():
-                        bos = torch.nan_to_num(bos, nan=0.0)
-                    y_inputs = torch.cat([bos, y_batch[:, :, :-1, :]], dim=2)
-
-                    # forward using predict
-                    pred_deltas = model.predict(
-                        src=X_batch,
-                        future_len=T_out,
-                        player_mask=player_mask,
-                        target_mask=target_mask
-                    )
-                    
-                    # loss and backward
-                    val_loss = masked_mse_loss(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
-                    val_total_se += val_loss.item() * y_mask.sum().item()
-                    val_total_valid += y_mask.sum().item()
-
-            val_epoch_loss = val_total_se / max(1, val_total_valid)
-            history['val_loss'].append(val_epoch_loss)
-
-            # scheduler update (after warmup)
-            if epoch > warmup_epochs:
-                scheduler.step(val_epoch_loss)
-
-        # Early Stopping
-        if val_loader is not None and early_stopping and val_epoch_loss is not None:
-            # if new best
-            if val_epoch_loss + min_delta < best_val_loss:
-                best_val_loss = val_epoch_loss
-                best_state_dict = copy.deepcopy(model.state_dict())
-                best_epoch = epoch
-                epochs_no_improve = 0
-            else:   # no improvement
-                epochs_no_improve += 1
-                if epochs_no_improve >= patience_es:
-                    if verbose:
-                        print(f"\nEarly stopping at epoch {epoch} (no improvement for {patience_es} epochs).")
-                        print(f"Best validation loss: {best_val_loss:.4e} at epoch {best_epoch}")
-                    model.load_state_dict(best_state_dict)
-                    break
-        
-        # Logging
-        epoch_time = time.time() - epoch_start_time
-        if verbose:
-            if val_epoch_loss is None:
-                print(f'[Epoch {epoch}/{epochs}] Train Loss={train_epoch_loss:.4e}; Time={epoch_time:.1f}s')
-            else:
-                print(f'[Epoch {epoch}/{epochs}] Train Loss={train_epoch_loss:.4e}; Val Loss={val_epoch_loss:.4e}; Time={epoch_time:.1f}s')
-        
-    total_time = time.time() - start_time
-    if verbose:
-        print(f'Total Training Time: {total_time:.1f}s')
+        avg_loss = total_loss / max(1, total_valid)
+        self.history['val_loss'].append(avg_loss)
+        self.writer.add_scalar('Loss/Validation', avg_loss, epoch)
+        return avg_loss
     
-    return model, history
+    def fit(self):
+        cfg = self.cfg.training
+        print(f'[Training]: Config:\n{asdict(self.cfg)}')
+
+        for epoch in range(cfg.epochs):
+            epoch_start = time.time()
+            train_loss = self.train_one_epoch(epoch)
+            val_loss = self.validate(epoch)
+
+            # Warmup + Plateau scheduling
+            if epoch < self.cfg.scheduler.warmup_epochs:
+                self.warmup_scheduler.step()
+            else:
+                self.plateau_scheduler.step(val_loss)
+
+            current_lr = self.optimizer.param_groups[0]['lr']
+            self.history['lr'].append(current_lr)
+            self.writer.add_scalar('LR', current_lr, epoch)
+
+            # Early Stopping
+            improved = val_loss < self.best_val_loss - cfg.min_delta
+            if improved:
+                self.best_val_loss = val_loss
+                self.epochs_no_improve = 0
+                self.best_state = deepcopy(self.model.state_dict())
+            else:
+                self.epochs_no_improve += 1
+
+            # Logging
+            print(
+                f'[Epoch {epoch+1}/{cfg.epochs}] '
+                f'Train={train_loss:.4e} Val={val_loss:.4e} '
+                f'LR={current_lr:.2e} Time={time.time()-epoch_start:.1f}s'
+            )
+
+            # Early stopping halt condition
+            if self.epochs_no_improve >= cfg.early_stopping_patience:
+                print(f'Early stopping after {epoch+1} epochs.')
+                break
+        
+        # load best model
+        self.model.load_state_dict(self.best_state)
+        self.writer.close()
+
+        print(f'Best Val Loss: {self.best_val_loss:.4e}')
+        print(f'Total Time: {time.time() - self.start_time:.1f}s')
+        print(f'TensorBoard logs saved at: {self.log_dir}')
+        return self.model, self.history
+

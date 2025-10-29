@@ -14,71 +14,101 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from dataclasses import dataclass, field
 
+@dataclass
+class OptimizerConfig:
+    lr: float = 3e-4
+    betas: tuple = (0.9, 0.98)
+    eps: float = 1e-9
+    weight_decay: float = 1e-4
 
+@dataclass
+class SchedulerConfig:
+    warmup_epochs: int = 5
+    lr_factor: float = 0.5
+    patience: int = 8
+    min_lr: float = 1e-6
+
+@dataclass
+class TrainingConfig:
+    epochs: int = 200
+    batch_size: int = 32
+    grad_clip_norm: float = 1.0
+    early_stopping: bool = True
+    early_stopping_patience: int = 16
+    min_delta: float = 1e-4
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    seed: int = 42
+
+@dataclass
+class TransformerConfig:
+    d_model: int = 128
+    nhead: int = 8
+    num_encoder_layers: int = 3
+    num_decoder_layers: int = 3
+    dim_feedforward: int = 256
+    dropout: float = 0.1
+    max_len: int = 500
+    pad_embedding_scale: float = 0.1
+    gnn_nhead: int = 4
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+@dataclass
+class DatasetConfig:
+    data_dir: str = "Data/"
+    data_fraction: float = 1.0
+    min_players: int = 7
+    history_window: int = 5
+    sequence_length: int = 10
+    target_features: bool = False
+    dt: float = 0.1
+
+    id_cols: list = field(default_factory=lambda: [
+        "game_id", "play_id", "nfl_id"
+    ])
+
+    features: list = field(default_factory=lambda: [
+        "x", "y", "absolute_yardline_number", "player_height", "num_frames_output",
+        "player_weight", "s", "a", "dir", "o", "ball_land_x",
+        "ball_land_y", "is_offense", "is_defense", "is_defensive_coverage",
+        "is_other_route_runner", "is_passer", "is_targeted_receiver",
+        "player_bmi", "x_velocity", "y_velocity", "angle_diff", "jerk",
+        "angular_velocity", "rolling_x_velocity_std",
+        "rolling_y_velocity_std", "rolling_a_std", "dist_to_ball_land",
+        "dist_from_los", "bearing_to_ball_land", "bearing_diff_o",
+        "bearing_diff_dir", "frame_id"
+    ])
+
+    angle_features: list = field(default_factory=lambda: [
+        "dir", "o", "angle_diff", "bearing_to_ball_land",
+        "bearing_diff_o", "bearing_diff_dir"
+    ])
+
+    scaled_features: list = field(default_factory=lambda: [
+        "absolute_yardline_number", "player_height", "player_weight",
+        "x", "y", "s", "a", "ball_land_x", "ball_land_y", "player_bmi",
+        "x_velocity", "y_velocity", "jerk", "angular_velocity",
+        "rolling_x_velocity_std", "rolling_y_velocity_std",
+        "rolling_a_std", "dist_to_ball_land", "dist_from_los", "frame_id",
+        "num_frames_output"
+    ])
+
+@dataclass
+class LoggingConfig:
+    log_dir: str = "runs/"
+    project_name: str = "GNN_Transformer_Training"
+    save_every: int = 10  # epochs
+    verbose: bool = True
+
+@dataclass
 class Config:
-    DATA_DIR = 'Data/'
-
-    SEED = 42
-
-    HISTORY_WINDOW = 5
-    
-    SEQUENCE_LENGTH = 10
-    DATA_FRACTION = 1.0
-    MIN_PLAYERS = 7
-    TARGET_FEATURES = False
-
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    # Transformer Hyperparameters
-    D_MODEL = 128
-    NHEAD = 8
-    NUM_ENCODER_LAYERS = 3
-    NUM_DECODER_LAYERS = 3
-    DIM_FEEDFORWARD = 256
-    DROPOUT = 0.1
-    MAX_LEN = 500
-    PAD_EMBEDDING_SCALE = 0.1
-
-    # FrameGNN Hyperparameters
-    GNN_NHEAD = 4
-
-    # Training Hyperparameters
-    BATCH_SIZE = 32
-    EPOCHS = 10
-    ETA = 1e-4
-    GRAD_CLIP_NORM = 1.0
-    # advanced
-    EARLY_STOPPING = True
-    PATIENCE = 20
-    MIN_DELTA = 1e-4
-    WARMUP_EPOCHS = 3
-    ETA_FACTOR = 0.5
-    ETA_PATIENCE = 10
-    ETA_MIN = 1e-6
-
-    # Datset Info
-
-    FEATURES = ['x', 'y', 'absolute_yardline_number', 'player_height', 'num_frames_output',
-                'player_weight', 's', 'a', 'dir', 'o', 'ball_land_x',
-                'ball_land_y', 'is_offense', 'is_defense', 'is_defensive_coverage',
-                'is_other_route_runner', 'is_passer', 'is_targeted_receiver',
-                'player_bmi', 'x_velocity', 'y_velocity', 'angle_diff', 'jerk',
-                'angular_velocity', 'rolling_x_velocity_std',
-                'rolling_y_velocity_std', 'rolling_a_std', 'dist_to_ball_land',
-                'dist_from_los', 'bearing_to_ball_land', 'bearing_diff_o',
-                'bearing_diff_dir', 'frame_id']
-    ID_COLS = ['game_id', 'play_id', 'nfl_id']
-    dt = 0.1
-    ANGLE_FEATURES = ['dir', 'o', 'angle_diff', 'bearing_to_ball_land', 
-                    'bearing_diff_o', 'bearing_diff_dir']
-    SCALED_FEATURES = ['absolute_yardline_number', 'player_height', 'player_weight', 
-                    'x', 'y', 's', 'a', 'ball_land_x', 'ball_land_y', 'player_bmi',
-                    'x_velocity', 'y_velocity', 'jerk', 'angular_velocity', 
-                    'rolling_x_velocity_std', 'rolling_y_velocity_std', 
-                    'rolling_a_std', 'dist_to_ball_land', 'dist_from_los', 'frame_id',
-                    'num_frames_output']
-
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    transformer: TransformerConfig = field(default_factory=TransformerConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
 def set_seed(seed: int = 42):
@@ -92,10 +122,13 @@ def set_seed(seed: int = 42):
     os.environ['PYTHONHASHSEED'] = str(seed)
     torch.use_deterministic_algorithms(True, warn_only=True)
 
-def load_prediction_data():
+def load_prediction_data(cfg: DatasetConfig):
     """
     Loads all training input and output CSV files and test data from data/train
     into DataFrames
+
+    Parameters:
+        cfg (DatasetConfig): dataset configuration
 
     Returns:
         train_input  (pd.DataFrame): Training input  data DataFrame
@@ -105,7 +138,7 @@ def load_prediction_data():
     Raises:
         FileNotFoundError: If data/train dir does not exist
     """
-    input_path = os.path.join(Config.DATA_DIR, 'train/')
+    input_path = os.path.join(cfg.data_dir, 'train/')
     # collect all training csv files
     input_files  = glob.glob(os.path.join(input_path,  'input_2023_w*.csv'))
     output_files = glob.glob(os.path.join(input_path, 'output_2023_w*.csv'))
@@ -118,15 +151,18 @@ def load_prediction_data():
     train_output = pd.concat([pd.read_csv(f) for f in output_files])
 
     # read test data into dfs
-    test_input  = pd.read_csv(os.path.join(Config.DATA_DIR, 'test_input.csv'))
-    test_template = pd.read_csv(os.path.join(Config.DATA_DIR, 'test.csv'))
+    test_input  = pd.read_csv(os.path.join(cfg.data_dir, 'test_input.csv'))
+    test_template = pd.read_csv(os.path.join(cfg.data_dir, 'test.csv'))
 
     return train_input, train_output, test_input, test_template
 
-def load_supplemental_data():
+def load_supplemental_data(cfg: DatasetConfig):
     """
     Loads all supplemental CSV files from
     supplemental/114239_nfl_competition_files_published_analytics_final
+
+    Parameters:
+        cfg (DatasetConfig): dataset configuration
 
     Returns:
         df_supp (pd.DataFrame): Supplemental data DataFrame
@@ -140,7 +176,7 @@ def load_supplemental_data():
     df_input, df_output, _, _ = load_prediction_data()
 
     # load supplemental data
-    supp_path = os.path.join(Config.DATA_DIR, 'supplementary_data.csv')
+    supp_path = os.path.join(cfg.data_dir, 'supplementary_data.csv')
 
     if os.path.isfile(supp_path):
         df_supp = pd.read_csv(supp_path)
