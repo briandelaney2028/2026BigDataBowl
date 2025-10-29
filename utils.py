@@ -95,6 +95,10 @@ class DatasetConfig:
         "num_frames_output"
     ])
 
+    # F_in
+    input_size = len(features.default_factory()) + len(angle_features.default_factory())
+    output_size = 2 if not target_features else input_size
+
 @dataclass
 class LoggingConfig:
     log_dir: str = "runs/"

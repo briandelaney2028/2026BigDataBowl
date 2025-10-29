@@ -164,11 +164,9 @@ test_dataset = TensorDataset(
     torch.tensor(y_mask_test, dtype=torch.bool)
 )
 
-input_size = X_train_scaled.shape[-1]
-output_size = y_train_deltas.shape[-1]
 gnn_transformer = GNNTransformer(
-    in_feats=input_size,
-    output_size=output_size,
+    in_feats=cfg.dataset.input_size,
+    output_size=cfg.dataset.output_size,
     cfg=cfg.transformer
 )
 print("Model:", gnn_transformer)
