@@ -13,12 +13,12 @@ from plot_play import plot_play
 
 
 
-utils.set_seed()
+utils.set_seed(Config.SEED)
     
-df_input, df_output, _, _ = utils.load_prediction_data()
-df_input['player_height'] = df_input['player_height'].apply(utils.height_to_inches)
-df_input = engineer_features(utils.invert_direction(df_input))
-df_output = utils.invert_direction(utils.map_play_direction(df_input, df_output))
+# df_input, df_output, _, _ = utils.load_prediction_data()
+# df_input['player_height'] = df_input['player_height'].apply(utils.height_to_inches)
+# df_input = engineer_features(utils.invert_direction(df_input))
+# df_output = utils.invert_direction(utils.map_play_direction(df_input, df_output))
 
 # # get X, y
 # # player_mask shows where padded players are
@@ -97,4 +97,5 @@ trained_gnn_transformer, transformer_history = train_gnn_transformer(
     epochs=10
 )
 
-plot_play(df_input, df_output, 2023112300, 55, trained_gnn_transformer, scaler)
+torch.save(trained_gnn_transformer, 'test_gnn.pth')
+scaler.save('test_gnn_scaler.pkl')

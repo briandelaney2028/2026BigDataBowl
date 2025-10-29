@@ -140,8 +140,6 @@ def plot_play(df_input, df_output, gid, pid, model, scaler):
     color_cycle = plt.cm.tab10.colors
     color_map = {pos: color_cycle[i % len(color_cycle)] for i, pos in enumerate(play['player_position'].unique())}
 
-    ax.scatter(play.iloc[0]['ball_land_x'], play.iloc[0]['ball_land_y'], s=30, marker='x', color='black')
-
     for player_id, player_df in play.groupby('nfl_id'):
         # pre throw
         pos = player_df.iloc[0]['player_position']
@@ -155,6 +153,9 @@ def plot_play(df_input, df_output, gid, pid, model, scaler):
             true_future = play_output[play_output['nfl_id'] == player_id]
             ax.scatter(true_future['x'], true_future['y'], s=35, color=color, edgecolors='black', label=None)
             ax.scatter(true_future['transformer_x'], true_future['transformer_y'], s=55, linewidths=1.8, marker='D', facecolor='none', edgecolor=color, label=None)
+
+    # plot ball land
+    ax.scatter(play.iloc[0]['ball_land_x'], play.iloc[0]['ball_land_y'], s=120, marker='x', color='black')
 
     # --- First legend: player positions (colors) ---
     handles, labels = ax.get_legend_handles_labels()
@@ -194,3 +195,20 @@ def plot_play(df_input, df_output, gid, pid, model, scaler):
     ax.set_ylim([-2, field_width+2])
     plt.tight_layout()
     plt.show()
+
+
+if __name__ == '__main__':
+    from utils import load_prediction_data, height_to_inches, invert_direction, map_play_direction
+    from FeatureScaler import FeatureScaler
+
+    df_input, df_output, _, _ = load_prediction_data()
+    df_input['player_height'] = df_input['player_height'].apply(height_to_inches)
+    df_input = engineer_features(invert_direction(df_input))
+    df_output = invert_direction(map_play_direction(df_input, df_output))
+    
+    model = torch.load('test_gnn.pth')
+    scaler = FeatureScaler.load('test_gnn_scaler.pkl')
+
+    plot_play(df_input, df_output, 2023112300, 55, model, scaler)
+    plot_play(df_input, df_output, 2023090700, 1711, model, scaler)
+    plot_play(df_input, df_output, 2023090700, 101, model, scaler)

@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+import joblib
+import os
 
 
 class FeatureScaler:
@@ -293,3 +295,57 @@ class FeatureScaler:
                 df_inv.drop(columns=[sin_col, cos_col], inplace=True)
 
         return self._df_to_array(df_inv, B, N, T)
+    
+    def save(self, fpath):
+        """
+        Save the fitted FeatureScaler
+
+        Parameters:
+            fpath (str): path to save scaler
+        """
+
+        state = {
+            'feature_names': self.feature_names,
+            'method': self.method,
+            'angle_features': self.angle_features,
+            'nan_threshold': self.nan_threshold,
+            'scalers': self.scalers,
+            'fitted': self.fitted,
+            'B': self.B,
+            'N': self.N,
+            'T': self.T,
+            'F': self.F,
+            'spatial_features': self.spatial_features,
+            'output_feature_names': self.output_feature_names,
+        }
+        joblib.dump(state, fpath)
+        print(f"[FeatureScaler] Saved to {os.path.abspath(fpath)}")
+
+    @classmethod
+    def load(cls, fpath):
+        """
+        Load a previously saved FeatureScaler
+
+        Parameters:
+            fpath (str): path to saved scaler
+
+        Returns:
+            Resotred FeatureScaler instance
+        """
+        state = joblib.load(fpath)
+        scaler = cls(
+            feature_names=state['feature_names'],
+            method=state['method'],
+            angle_features=state['angle_features'],
+            nan_threshold=state['nan_threshold'],
+        )
+        scaler.scalers = state['scalers']
+        scaler.fitted = state['fitted']
+        scaler.B = state['B']
+        scaler.N = state['N']
+        scaler.T = state['T']
+        scaler.F = state['F']
+        scaler.spatial_features = state['spatial_features']
+        scaler.output_feature_names = state['output_feature_names']
+        print(f"[FeatureScaler] Loaded from {os.path.abspath(fpath)}")
+        return scaler
