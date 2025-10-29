@@ -211,10 +211,8 @@ if __name__ == '__main__':
     df_input = engineer_features(invert_direction(df_input), cfg.dataset)
     df_output = invert_direction(map_play_direction(df_input, df_output))
     
-    model_folder = os.path.join(cfg.dataset.saves_dir, 'Models/')
-    model_path = os.path.join(model_folder, 'test_gnn_enhncd_train.pth')
-    scaler_folder = os.path.join(cfg.dataset.saves_dir, 'Scalers/')
-    scaler_path = os.path.join(scaler_folder, 'test_gnn_scaler_enhncd_train.pkl')
+    model_path = os.path.join(cfg.dataset.data_dir, 'Models', 'test_gnn_enhncd_train.pth')
+    scaler_path = os.path.join(cfg.dataset.data_dir, 'Scalers', 'test_gnn_scaler_enhncd_train.pkl')
 
     model = torch.load(model_path)
     scaler = FeatureScaler.load(scaler_path)

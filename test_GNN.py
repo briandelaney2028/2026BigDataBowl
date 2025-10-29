@@ -12,81 +12,6 @@ from Transformers import GNNTransformer
 from typing import Union, List, Dict
 import os
 
-
-
-
-def evaluate_model(
-        model: torch.nn.Module,
-        test_loader: DataLoader,
-        loss_fns: Union[torch.nn.Module, List[torch.nn.Module]],
-        device: str = 'cuda' if torch.cuda.is_available() else 'cpu') -> Dict[str, float]:
-    """
-    Evaluate a fully trained GNNTransformer on a held-out test set.
-
-    Parameters:
-        model (nn.Module): trained model
-        test_loader (DataLoader): held out test data
-        loss_fns (Union[torch.nn.Module, List[torch.nn.Module]]): one or more loss fns
-        device (str): device
-
-    Returns:
-        Dict[str, float]: averaged loss for each proved loss function
-    """
-    model.eval()
-    model.to(device)
-
-    if not isinstance(loss_fns, list):
-        loss_fns = [loss_fns]
-
-    total_losses = [0.0 for _ in loss_fns]
-    total_valid = 0
-
-    for batch in test_loader:
-        X_batch, y_batch, player_mask, target_mask, y_mask = [
-            t.to(device) for t in batch
-        ]
-
-        # decoder autoregressive inputs
-        B, N, T_out, F_out = y_batch.shape
-        bos = X_batch[:, :, -1:, 0:F_out].clone()
-        # may have introduced NaN values
-        if torch.isnan(bos).any():
-            bos = torch.nan_to_num(bos, nan=0.0)
-        y_inputs = torch.cat([bos, y_batch[:, :, :-1, :]], dim=2)
-
-        # forward using predict
-        pred_deltas = model.predict(
-            src=X_batch,
-            future_len=T_out,
-            player_mask=player_mask,
-            target_mask=target_mask
-        )
-
-        # compute each loss
-        for i, loss_fn in enumerate(loss_fns):
-            loss = loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
-            if getattr(loss_fn, '__name__') == 'masked_FDE_loss':
-                valid_counts = y_mask.sum(dim=-1)
-                valid_mask = valid_counts > 0
-                total_losses[i] = loss.item() * valid_mask.sum().item()
-            else:
-                total_losses[i] = loss.item() * y_mask.sum().item()
-
-        total_valid += y_mask.sum().item()
-
-    avg_losses = [total_loss / max(1, total_valid) for total_loss in total_losses]
-
-    results = {
-        getattr(loss_fn, '__name__', f'loss_{i+1}'): avg_losses[i]
-        for i, loss_fn in enumerate(loss_fns)
-    }
-
-    print('\nFinal Test Evaluation')
-    for name, value in results.items():
-        print(f'{name}: {value:.4e}')
-    return results
-
-
 cfg = Config()
 
 utils.set_seed(cfg.training.seed)
@@ -146,7 +71,7 @@ last_test_scaled = X_test_scaled[:, :, -1, :2]
 # convert y to deltas from last known position
 y_train_deltas = prepare_targets_as_deltas(y_train_scaled, last_train_scaled, player_mask_train)
 y_val_deltas = prepare_targets_as_deltas(y_val_scaled, last_val_scaled, player_mask_val)
-y_test_deltas = prepare_targets_as_deltas(y_test, last_test_scaled, player_mask_test)
+y_test_deltas = prepare_targets_as_deltas(y_test_scaled, last_test_scaled, player_mask_test)
 
 # wrap data
 train_dataset = TensorDataset(
@@ -203,7 +128,7 @@ torch.save(trained_gnn_transformer, model_path)
 scaler.save(scaler_path)
 
 loss_fns = [masked_mse_loss, masked_FDE_loss]
-evaluate_model(
+utils.evaluate_model(
     trained_gnn_transformer,
     test_loader,
     loss_fns=loss_fns
