@@ -6,8 +6,9 @@ import matplotlib.patches as patches
 from feature_engineering import engineer_features
 from data_sequencing import generate_sequences_4D
 from train import reconstruct_absolute_from_deltas
+from utils import Config
 
-def plot_play(df_input, df_output, gid, pid, model, scaler):
+def plot_play(df_input, df_output, gid, pid, model, scaler, cfg):
     """
     Visualize a single play and overlay GNN-Transformer predicted future positions.
 
@@ -38,7 +39,7 @@ def plot_play(df_input, df_output, gid, pid, model, scaler):
     play = df_input[(df_input['game_id'] == gid) & (df_input['play_id'] == pid)]
     play_output = df_output[(df_output['game_id'] == gid) & (df_output['play_id'] == pid)].copy()
     
-    engineered_play = engineer_features(play)
+    engineered_play = engineer_features(play, cfg.dataset)
     
     (
         X,         # (1, N, T_in, F)
@@ -49,6 +50,7 @@ def plot_play(df_input, df_output, gid, pid, model, scaler):
         id_map        # (1, N)
     ) = generate_sequences_4D(
         engineered_play,
+        cfg.dataset,
         df_output=play_output,
         sequence_length=10,
     )
@@ -201,14 +203,16 @@ if __name__ == '__main__':
     from utils import load_prediction_data, height_to_inches, invert_direction, map_play_direction
     from FeatureScaler import FeatureScaler
 
-    df_input, df_output, _, _ = load_prediction_data()
+    cfg = Config()
+
+    df_input, df_output, _, _ = load_prediction_data(cfg.dataset)
     df_input['player_height'] = df_input['player_height'].apply(height_to_inches)
-    df_input = engineer_features(invert_direction(df_input))
+    df_input = engineer_features(invert_direction(df_input), cfg.dataset)
     df_output = invert_direction(map_play_direction(df_input, df_output))
     
-    model = torch.load('test_gnn.pth')
-    scaler = FeatureScaler.load('test_gnn_scaler.pkl')
+    model = torch.load('test_gnn_enhncd_train.pth')
+    scaler = FeatureScaler.load('test_gnn_scaler_enhncd_train.pkl')
 
-    plot_play(df_input, df_output, 2023112300, 55, model, scaler)
-    plot_play(df_input, df_output, 2023090700, 1711, model, scaler)
-    plot_play(df_input, df_output, 2023090700, 101, model, scaler)
+    plot_play(df_input, df_output, 2023112300, 55, model, scaler, cfg)
+    plot_play(df_input, df_output, 2023090700, 1711, model, scaler, cfg)
+    plot_play(df_input, df_output, 2023090700, 101, model, scaler, cfg)
