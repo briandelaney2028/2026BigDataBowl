@@ -335,7 +335,7 @@ class Trainer:
             self.history['lr'].append(current_lr)
             self.writer.add_scalar('LR', current_lr, epoch)
 
-            # Early Stopping
+            # Early Stopping Bookkeeping
             improved = val_loss < self.best_val_loss - cfg.min_delta
             if improved:
                 self.best_val_loss = val_loss

@@ -332,9 +332,9 @@ def run_optuna_study(
     study.optimize(lambda t: obj(t, n_epochs_warmup_prune=3), n_trials=n_trials, n_jobs=n_jobs, timeout=timeout)
     
     print('[INFO] Study Finished')
-    print('Best Trial:')
     trial = study.best_trial
-    print(f'\Test Loss: {trial.value}')
+    print(f'Best Trial: {trial.number}')
+    print(f'\tTest Loss: {trial.value}')
     print('\tParams:')
     for k, v in trial.params.items():
         print(f'\t\t{k}: {v}')

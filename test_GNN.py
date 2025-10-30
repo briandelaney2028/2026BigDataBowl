@@ -13,6 +13,13 @@ from typing import Union, List, Dict
 import os
 
 cfg = Config()
+cfg.optimizer.lr = 0.003754
+cfg.optimizer.weight_decay = 1.7698e-6
+cfg.training.batch_size = 16
+cfg.transformer.d_model = 64
+cfg.transformer.num_encoder_layers = 4
+cfg.transformer.num_decoder_layers = 2
+cfg.transformer.dropout = 0.18155
 
 utils.set_seed(cfg.training.seed)
     
@@ -104,6 +111,8 @@ gnn_transformer = GNNTransformer(
     cfg=cfg.transformer
 )
 print("Model:", gnn_transformer)
+num_params = sum(p.numel() for p in gnn_transformer.parameters())
+print(f'Number of Parameters: {num_params}')
 
 train_loader = DataLoader(train_dataset, batch_size=cfg.training.batch_size, shuffle=True,  collate_fn=collate_default)
 val_loader   = DataLoader(  val_dataset, batch_size=cfg.training.batch_size, shuffle=False, collate_fn=collate_default)
@@ -120,9 +129,9 @@ trainer = Trainer(
 trained_gnn_transformer, transformer_history = trainer.fit()
 
 model_folder = os.path.join(cfg.dataset.saves_dir, 'Models/')
-model_path = os.path.join(model_folder, 'test_gnn_enhncd_train.pth')
+model_path = os.path.join(model_folder, 'gnn_opt.pth')
 scaler_folder = os.path.join(cfg.dataset.saves_dir, 'Scalers/')
-scaler_path = os.path.join(scaler_folder, 'test_gnn_scaler_enhncd_train.pkl')
+scaler_path = os.path.join(scaler_folder, 'gnn_opt.pkl')
 
 torch.save(trained_gnn_transformer, model_path)
 scaler.save(scaler_path)
