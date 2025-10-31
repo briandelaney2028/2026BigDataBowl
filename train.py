@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torch.utils.data import TensorDataset
 import numpy as np
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -7,9 +8,128 @@ import time
 from copy import deepcopy
 from dataclasses import asdict
 import os
+from sklearn.model_selection import train_test_split
 from utils import Config
+import utils
+from Transformers import GNNTransformer
+from feature_engineering import engineer_features
+from data_sequencing import generate_sequences_4D
+from FeatureScaler import FeatureScaler
 from Transformers import GNNTransformer
 
+def build_model(cfg: Config) -> torch.nn.Module:
+    """
+    Generates an untrained model based on cfg
+
+    Parameters:
+        cfg (Config): sampled configuration
+
+    Returns:
+        (torch.nn.Module): untrained model
+    """
+    
+    return GNNTransformer(
+        cfg.dataset.input_size,
+        cfg.dataset.output_size,
+        cfg=cfg.transformer
+    )
+
+def get_dataloaders(cfg) -> tuple[DataLoader, DataLoader, DataLoader]:
+    """
+    Load data into DataLoaders
+
+    Parameters:
+        cfg (Config): sampled configuration
+
+    Returns:
+        (tuple[DataLoader, DataLoader, DataLoader]): train, val, test DataLoaders
+    """
+
+    # get sequence data
+    save_path = os.path.join(cfg.dataset.data_dir, 'Saves', 'GNNtransformer_data.npz')
+    required_keys = ['X', 'y', 'player_mask', 'target_mask', 'y_mask', 'ids']
+    data = utils.load_saved_data(save_path, required_keys)
+
+    # If loading failed, generate and save new data
+    if data is None:
+        # load data, and engineer features
+        df_input, df_output, _, _ = utils.load_prediction_data(cfg.dataset)
+        df_input['player_height'] = df_input['player_height'].apply(utils.height_to_inches)
+        df_input = engineer_features(utils.invert_direction(df_input), cfg.dataset)
+        df_output = utils.invert_direction(utils.map_play_direction(df_input, df_output))
+
+        print('[INFO] Generating new data sequences...')
+        X, y, player_mask, target_mask, y_mask, ids = generate_sequences_4D(df_input, cfg.dataset, df_output=df_output)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        np.savez(save_path, X=X, y=y, player_mask=player_mask, target_mask=target_mask, y_mask=y_mask, ids=ids)
+        print('[INFO] Data saved successfully to {save_path}')
+    else:
+        X, y, player_mask, target_mask, y_mask, ids = data['X'], data['y'], data['player_mask'], data['target_mask'], data['y_mask'], data['ids']
+    print('[INFO] Data ready for use.')
+
+    # Make Train-Test split
+    X_train, X_temp, y_train, y_temp, player_mask_train, player_mask_temp, target_mask_train, target_mask_temp, y_mask_train, y_mask_temp = train_test_split(
+        X, y, player_mask, target_mask, y_mask, test_size=0.3, random_state=cfg.training.seed
+    )
+
+    # Make Validation-Test split
+    X_val, X_test, y_val, y_test, player_mask_val, player_mask_test, target_mask_val, target_mask_test, y_mask_val, y_mask_test = train_test_split(
+        X_temp, y_temp, player_mask_temp, target_mask_temp, y_mask_temp, test_size=0.3, random_state=cfg.training.seed
+    )
+    # Scale Features
+    scaler = FeatureScaler(feature_names=cfg.dataset.features, method='standard', angle_features=cfg.dataset.angle_features)
+    X_train_scaled = scaler.fit_transform(X_train, cfg.dataset.scaled_features)
+    X_val_scaled = scaler.transform(X_val)
+    X_test_scaled = scaler.transform(X_test)
+    if not cfg.dataset.target_features:
+        y_train_scaled = scaler.transform(y_train, ['x', 'y'])
+        y_val_scaled = scaler.transform(y_val, ['x', 'y'])
+        y_test_scaled = scaler.transform(y_test, ['x', 'y'])
+    else:
+        y_train_scaled = scaler.transform(y_train)
+        y_val_scaled = scaler.transform(y_val)
+        y_test_scaled = scaler.transform(y_test)
+
+    # Obtain last positions (B, N, 2)
+    last_train_scaled = X_train_scaled[:, :, -1, :2]
+    last_val_scaled = X_val_scaled[:, :, -1, :2]
+    last_test_scaled = X_test_scaled[:, :, -1, :2]
+
+    # convert y to deltas from last known position
+    y_train_deltas = prepare_targets_as_deltas(y_train_scaled, last_train_scaled, player_mask_train)
+    y_val_deltas = prepare_targets_as_deltas(y_val_scaled, last_val_scaled, player_mask_val)
+    y_test_deltas = prepare_targets_as_deltas(y_test_scaled, last_test_scaled, player_mask_test)
+
+    # wrap data
+    train_dataset = TensorDataset(
+        torch.tensor(X_train_scaled, dtype=torch.float32),
+        torch.tensor(y_train_deltas, dtype=torch.float32),
+        torch.tensor(player_mask_train, dtype=torch.bool),
+        torch.tensor(target_mask_train, dtype=torch.bool),
+        torch.tensor(y_mask_train, dtype=torch.bool)
+    )
+
+    val_dataset = TensorDataset(
+        torch.tensor(X_val_scaled, dtype=torch.float32),
+        torch.tensor(y_val_deltas, dtype=torch.float32),
+        torch.tensor(player_mask_val, dtype=torch.bool),
+        torch.tensor(target_mask_val, dtype=torch.bool),
+        torch.tensor(y_mask_val, dtype=torch.bool)
+    )
+
+    test_dataset = TensorDataset(
+        torch.tensor(X_test_scaled, dtype=torch.float32),
+        torch.tensor(y_test_deltas, dtype=torch.float32),
+        torch.tensor(player_mask_test, dtype=torch.bool),
+        torch.tensor(target_mask_test, dtype=torch.bool),
+        torch.tensor(y_mask_test, dtype=torch.bool)
+    )
+
+    train_loader = DataLoader(train_dataset, batch_size=cfg.training.batch_size, shuffle=True,  collate_fn=collate_default)
+    val_loader   = DataLoader(  val_dataset, batch_size=cfg.training.batch_size, shuffle=False, collate_fn=collate_default)
+    test_loader  = DataLoader( test_dataset, batch_size=cfg.training.batch_size, shuffle=False, collate_fn=collate_default)
+
+    return train_loader, val_loader, test_loader, scaler
 
 def prepare_targets_as_deltas(y_abs, last_pos, player_mask):
     """
@@ -151,6 +271,63 @@ def masked_FDE_loss(predictions, targets, mask):
         return torch.tensor(0.0, device=device, requires_grad=True)
     return disp_err.sum() / denom
 
+def smoothness_loss(predictions, last_obs, mask, player_mask, lambda_vel=1.0, lambda_acc=1.0):
+    """
+    Penalize large changes in x/y velocities and accelerations across predicted
+    outputs, using the same reconstruction logic as reconstruct_absolute_from_deltas,
+    but keeping gradient flow (no .detach() or numpy conversion).
+
+    Parameters:
+        predictions (torch.Tensor): (B, N, T_out, 2) predicted deltas (scaled)
+        last_obs (torch.Tensor): (B, N, 1, 2) last absolute positions from inputs
+        mask (torch.Tensor): (B, N, T_out) True where valid prediction
+        player_mask (torch.Tensor): (B, N) True where player is valid (not padded)
+        lambda_vel (float): weighting for velocity smoothness loss
+        lambda_acc (float): weighting for acceleration smoothness loss
+    Returns:
+        total_loss (torch.Tensor), loss_dict (dict)
+    """
+    device = predictions.device
+    B, N, T_out, _ = predictions.shape
+    if torch.isnan(last_obs).any():
+        last_obs = torch.nan_to_num(last_obs, nan=0.0)
+
+    # Reconstruct absolute positions
+    abs_pos = torch.zeros_like(predictions)
+    abs_pos[:, :, 0, :] = last_obs[:, :, 0, :] + predictions[:, :, 0, :]
+    for t in range(1, T_out):
+        abs_pos[:, :, t, :] = abs_pos[:, :, t-1, :] + predictions[:, :, t, :]
+
+    # mask invalid players
+    valid_mask = player_mask.unsqueeze(-1).unsqueeze(-1)  # (B, N, 1, 1)
+    abs_pos = abs_pos * valid_mask
+
+    # Extend positions and mask with last_obs
+    pos = torch.cat([last_obs, abs_pos], dim=2)  # (B, N, T_out+1, 2)
+    extended_mask = torch.cat(
+        [torch.ones_like(mask[..., :1], dtype=torch.bool, device=device), mask], dim=2
+    )
+
+    # compute velocities
+    vel = pos[..., 1:, :] - pos[..., :-1, :]
+    mask_vel = extended_mask[..., 1:] & extended_mask[..., :-1] & player_mask.unsqueeze(-1)
+
+    # compute accelerations
+    acc = vel[..., 1:, :] - vel[..., :-1, :]
+    mask_acc = mask_vel[..., 1:] & mask_vel[..., :-1]
+
+    # penalize large velocities and accelerations 
+    vel_diff_sq = (vel.pow(2).sum(dim=-1)) * mask_vel
+    acc_diff_sq = (acc.pow(2).sum(dim=-1)) * mask_acc
+
+    denom_vel = mask_vel.sum()
+    denom_acc = mask_acc.sum()
+
+    vel_loss = vel_diff_sq.sum() / denom_vel if denom_vel > 0 else torch.tensor(0.0, device=device)
+    acc_loss = acc_diff_sq.sum() / denom_acc if denom_acc > 0 else torch.tensor(0.0, device=device)
+
+    total = lambda_vel * vel_loss + lambda_acc * acc_loss
+    return total, {'vel': vel_loss.item(), 'acc': acc_loss.item()}
 
 def collate_default(batch):
     Xs = torch.stack([b[0] for b in batch], dim=0)
@@ -198,11 +375,15 @@ class Trainer:
         self.best_val_loss = float('inf')
         self.epochs_no_improve = 0
         self.start_time = time.time()
-        self.history = {'train_loss': [], 'val_loss': [], 'lr': []}
+        self.history = {'train_loss': [], 'val_loss': [], 'lr': [], 'teacher_forcing': []}
 
         self.writer = logger or SummaryWriter(log_dir=os.path.join(log_dir, time.strftime("%Y%m%d-%H%M%S")))
         self.log_dir = self.writer.log_dir
         print(f'TensorBoard logs: {self.log_dir}')
+
+        self.ss_start_p = cfg.training.start_p
+        self.ss_lowest_p = cfg.training.lowest_p
+        self.ss_decay = cfg.training.decay_epochs
 
     def _init_optimizer(self):
         opt_cfg = self.cfg.optimizer
@@ -236,9 +417,34 @@ class Trainer:
 
         return warmup, plateau
     
+    def _get_teacher_forcing_ratio(self, epoch):
+        # no decay
+        if self.ss_decay <= 0:
+            return self.ss_start_p
+        
+        # warm up phase (no decay yet)
+        delay = self.cfg.scheduler.warmup_epochs
+        if epoch < delay:
+            return self.ss_start_p
+        
+        # compute normalized progress over decay window [0, 1]
+        t = (epoch - delay) / max(1.0, self.ss_decay)
+        t = min(max(t, 0.0), 1.0)
+
+        # inverse sigmoid decay
+        k = 7.5     # shape factor
+        inv_sig = 1.0 / (1.0 + np.exp(k * (t - 0.5)))
+        ratio = self.ss_lowest_p + (self.ss_start_p - self.ss_lowest_p) * inv_sig
+        return ratio
+    
     def train_one_epoch(self, epoch):
         self.model.train()
-        total_loss, total_valid = 0.0, 0
+        total_valid = 0
+        total_loss, total_pred_loss, total_vel_loss, total_acc_loss = 0.0, 0.0, 0.0, 0.0
+
+        tfr = self._get_teacher_forcing_ratio(epoch)
+        self.history['teacher_forcing'].append(tfr)
+        self.writer.add_scalar('Hyperparams/Teacher_Forcing_Ratio', tfr, epoch)
 
         for batch in self.train_loader:
             X_batch, y_batch, player_mask, target_mask, y_mask = [
@@ -253,19 +459,57 @@ class Trainer:
             # may have introduced NaN values
             if torch.isnan(bos).any():
                 bos = torch.nan_to_num(bos, nan=0.0)
-            y_inputs = torch.cat([bos, y_batch[:, :, :-1, :]], dim=2)
+            
+            # if teacher forcing ratio near 1, skip sampling
+            if tfr > 0.99:
+                y_inputs = torch.cat([bos, y_batch[:, :, :-1, :]], dim=2)
 
-            # forward
-            pred_deltas = self.model(
-                X_batch,
-                tgt_inputs=y_inputs,
-                player_mask=player_mask,
-                target_mask=target_mask,
-                y_mask=y_mask
-            )
+                # forward
+                pred_deltas = self.model(
+                    X_batch,
+                    tgt_inputs=y_inputs,
+                    player_mask=player_mask,
+                    target_mask=target_mask,
+                    y_mask=y_mask
+                )
+            else:
+                y_inputs_teacher = torch.cat([bos, y_batch[:, :, :-1, :]], dim=2)
 
-            # compute loss
-            loss = self.loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
+                # initial forward with full teacher forcing
+                pred_teacher = self.model(
+                    X_batch,
+                    tgt_inputs=y_inputs_teacher,
+                    player_mask=player_mask,
+                    target_mask=target_mask,
+                    y_mask=y_mask
+                )
+
+                # soft interpolation between teacher forcing and predictions
+                pred_shifted = torch.cat([bos, pred_teacher[:, :, :-1, :]], dim=2)
+
+                # blend
+                y_inputs_soft = tfr * y_inputs_teacher + (1 - tfr) * pred_shifted
+
+                # forward again with blended inputs
+                pred_deltas = self.model(
+                    X_batch,
+                    tgt_inputs=y_inputs_soft,
+                    player_mask=player_mask,
+                    target_mask=target_mask,
+                    y_mask=y_mask
+                )
+
+
+            # compute prediction loss
+            pred_loss = self.loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
+
+            # compute smoothness loss
+            smooth_loss, smooth_log = smoothness_loss(pred_deltas, X_batch[:, :, -1:, :2], y_mask, player_mask, 
+                                                      lambda_vel=self.cfg.training.lambda_vel,
+                                                      lambda_acc=self.cfg.training.lambda_acc)
+            
+            # combine for total loss
+            loss = pred_loss + smooth_loss
 
             # backward
             loss.backward()
@@ -273,11 +517,33 @@ class Trainer:
             self.optimizer.step()
 
             total_loss += loss.item() * y_mask.sum().item()
+            total_pred_loss += pred_loss.item() * y_mask.sum().item()
+            total_vel_loss += smooth_log['vel'] * y_mask.sum().item()
+            total_acc_loss += smooth_log['acc'] * y_mask.sum().item()
             total_valid += y_mask.sum().item()
 
         avg_loss = total_loss / max(1, total_valid)
+        avg_pred_loss = total_pred_loss / max(1, total_valid)
+        avg_vel_loss = total_vel_loss / max(1, total_valid)
+        avg_acc_loss = total_acc_loss / max(1, total_valid)
         self.history['train_loss'].append(avg_loss)
         self.writer.add_scalar('Loss/Train', avg_loss, epoch)
+        self.writer.add_scalars(
+            "Loss/Smoothness",
+            {
+                "Velocity": avg_vel_loss,
+                "Acceleration": avg_acc_loss
+            },
+            global_step=epoch
+        )
+        self.writer.add_scalars(
+            "Loss/Components",
+            {
+                "Predictions": avg_pred_loss,
+                "Smoothness": avg_vel_loss + avg_acc_loss
+            },
+            global_step=epoch
+        )
         return avg_loss
     
     @torch.no_grad()
@@ -333,7 +599,7 @@ class Trainer:
 
             current_lr = self.optimizer.param_groups[0]['lr']
             self.history['lr'].append(current_lr)
-            self.writer.add_scalar('LR', current_lr, epoch)
+            self.writer.add_scalar('Hyperparams/LR', current_lr, epoch)
 
             # Early Stopping Bookkeeping
             improved = val_loss < self.best_val_loss - cfg.min_delta

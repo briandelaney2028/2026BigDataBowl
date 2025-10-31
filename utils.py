@@ -37,10 +37,15 @@ class TrainingConfig:
     batch_size: int = 32                # batch size
     grad_clip_norm: float = 1.0         # gradient clipping norm value
     early_stopping: bool = True         # whether early stopping
-    early_stopping_patience: int = 16   # how long to wait w/o improvement before stopping
+    early_stopping_patience: int = 20   # how long to wait w/o improvement before stopping
     min_delta: float = 1e-4             # minimum improvement necessary 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42      # random seed
+    start_p: float = 1.0            # init teacher forcing prob
+    lowest_p: float = 0.2           # lowest decayed teacher forcing prob
+    decay_epochs: float = 15        # period over which decaying occurs
+    lambda_vel = 0.1        # weight on velocity smoothness
+    lambda_acc = 0.05       # weight on acceleration smoothness
 
 @dataclass
 class TransformerConfig:
