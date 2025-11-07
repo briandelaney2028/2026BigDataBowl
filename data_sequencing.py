@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from tqdm.auto import tqdm
 from utils import DatasetConfig
 
 
@@ -74,7 +75,7 @@ def generate_sequences_4D(
     global_max_ylen = 0
 
     X_list, y_list, player_mask_list, target_mask_list, y_mask_list, id_list = [], [], [], [], [], []
-    for idx, ((gid, pid), play_df) in enumerate(input_groups.items()):
+    for idx, ((gid, pid), play_df) in tqdm(enumerate(input_groups.items()), "Sequencing..."):
         player_groups = dict(tuple(play_df.groupby('nfl_id', sort=False)))
         players = list(player_groups.keys())
         N = len(players)

@@ -44,8 +44,10 @@ class TrainingConfig:
     start_p: float = 1.0            # init teacher forcing prob
     lowest_p: float = 0.2           # lowest decayed teacher forcing prob
     decay_epochs: float = 15        # period over which decaying occurs
-    lambda_vel = 0.1        # weight on velocity smoothness
-    lambda_acc = 0.05       # weight on acceleration smoothness
+    delta: float = 0.5              # delta for Huber loss
+    time_decay: float = 0.03        # time decay factor for Huber loss
+    lambda_vel: float = 0.1        # weight on velocity smoothness
+    lambda_acc: float = 0.05       # weight on acceleration smoothness
 
 @dataclass
 class TransformerConfig:
@@ -66,10 +68,12 @@ class DatasetConfig:
     saves_dir: str = 'Saves/'        # model and scalers directory
     data_fraction: float = 1.0      # fraction of data to sequence
     min_players: int = 7            # min number of valid players to sequence
-    history_window: int = 5         # window for average metrics
+    history_window: int = 5         # window for average, sliding-window metrics
+    stride: int = 2                 # stride for sliding-window metrics
     sequence_length: int = 10       # input sequence length T_in
     target_features: bool = False   # whether to have GNNTransformer decode synthetic features
     dt: float = 0.1                 # time between frames
+    n_route_clusters = 7            # num means for route clustering
     # ID columns
     id_cols: list = field(default_factory=lambda: [
         "game_id", "play_id", "nfl_id"
@@ -84,22 +88,30 @@ class DatasetConfig:
         "angular_velocity", "rolling_x_velocity_std",
         "rolling_y_velocity_std", "rolling_a_std", "dist_to_ball_land",
         "dist_from_los", "bearing_to_ball_land", "bearing_diff_o",
-        "bearing_diff_dir", "frame_id"
+        "bearing_diff_dir", "nearest_opp_dist", "closing_speed", "num_nearby_opp_3", 
+        "num_nearby_opp_5", "mirror_wr_vx", "mirror_wr_vy", "mirror_offset_x",
+        "mirror_offset_y", "mirror_wr_dist", "traj_straightness", "traj_max_turn",
+        "traj_mean_turn", "traj_depth", "traj_width", "speed_mean", "speed_change",
+        "route_pattern", "frame_id"
     ])
     # Features with angular dimensions
     angle_features: list = field(default_factory=lambda: [
         "dir", "o", "angle_diff", "bearing_to_ball_land",
-        "bearing_diff_o", "bearing_diff_dir"
+        "bearing_diff_o", "bearing_diff_dir", "traj_max_turn", "traj_mean_turn"
     ])
     # Features needing scaling
     scaled_features: list = field(default_factory=lambda: [
-        "absolute_yardline_number", "player_height", "player_weight",
-        "x", "y", "s", "a", "ball_land_x", "ball_land_y", "player_bmi",
-        "x_velocity", "y_velocity", "jerk", "angular_velocity",
-        "rolling_x_velocity_std", "rolling_y_velocity_std",
-        "rolling_a_std", "dist_to_ball_land", "dist_from_los", "frame_id",
-        "num_frames_output"
-    ])
+    "x", "y", "absolute_yardline_number",
+    "player_height", "player_weight", "player_bmi",
+    "s", "a", "x_velocity", "y_velocity", "angular_velocity",
+    "jerk", "rolling_x_velocity_std", "rolling_y_velocity_std",
+    "rolling_a_std", "dist_to_ball_land", "dist_from_los",
+    "ball_land_x", "ball_land_y", "closing_speed",
+    "mirror_wr_vx", "mirror_wr_vy", "mirror_offset_x", "mirror_offset_y",
+    "mirror_wr_dist", "traj_straightness", "traj_depth", "traj_width",
+    "speed_mean", "speed_change", "num_nearby_opp_3", "num_nearby_opp_5",
+    "frame_id", "num_frames_output"
+])
 
     # F_in
     input_size = len(features.default_factory()) + len(angle_features.default_factory())
