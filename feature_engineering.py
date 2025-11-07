@@ -174,7 +174,7 @@ def interaction_features(df: pd.DataFrame):
     })
     return result
 
-def route_features(df, cfg, kmeans=None, scaler=None, fit=True):
+def route_features(df, cfg, fit=True):
     """
     Extract short-window route dynamics at a frame level
     Each player-play trajectory is divided into overlapping windows of length
@@ -259,6 +259,8 @@ def route_features(df, cfg, kmeans=None, scaler=None, fit=True):
         'traj_depth', 'traj_width', 'speed_mean', 'speed_change'
     ]
     X = route_df[feat_cols].fillna(0)
+    scaler_save_path = os.path.join(cfg.data_dir, 'Saves', 'route_scaler.pkl')
+    kmeans_save_path = os.path.join(cfg.data_dir, 'Saves', 'route_kmeans.pkl')
     
     if fit:
         scaler = StandardScaler()
@@ -271,22 +273,22 @@ def route_features(df, cfg, kmeans=None, scaler=None, fit=True):
         route_df['route_pattern'] = kmeans.fit_predict(X_scaled)
         
         # save scaler and kmeans
-        scaler_save_path = os.path.join(cfg.data_dir, 'Saves', 'route_scaler.pkl')
         with open(scaler_save_path, 'wb') as f:
             pickle.dump(scaler, f)
-        kmeans_save_path = os.path.join(cfg.data_dir, 'Saves', 'route_kmeans.pkl')
         with open(kmeans_save_path, 'wb') as f:
             pickle.dump(kmeans, f)
 
         return route_df
     else:
-        assert scaler is not None, 'If not fitting, scaler argument is required'
-        assert kmeans is not None, 'If not fitting, kmeans argument is required'
+        with open(scaler_save_path, 'rb') as f:
+            scaler = pickle.load(f)
+        with open(kmeans_save_path, 'rb') as f:
+            kmeans = pickle.load(f)
         X_scaled = scaler.transform(X)
         route_df['route_pattern'] = kmeans.predict(X_scaled)
         return route_df
 
-def engineer_features(df: pd.DataFrame, cfg: DatasetConfig, verbose=True) -> pd.DataFrame:
+def engineer_features(df: pd.DataFrame, cfg: DatasetConfig, verbose=True, training=True) -> pd.DataFrame:
     """
     Engineers revised set of new features for the given DataFrame.
     NOTE: Coordinate system 0 deg is along y-axis and increases clockwise
@@ -295,6 +297,7 @@ def engineer_features(df: pd.DataFrame, cfg: DatasetConfig, verbose=True) -> pd.
         df (pd.DataFrame): Input DataFrame
         cfg (DatasetConfig): dataset configuration
         verbose (bool): Whether to print progress messages
+        training (bool): Whether creating training df or not
     Returns:
         df (pd.DataFrame): Transformed DataFrame
     """
@@ -423,16 +426,16 @@ def engineer_features(df: pd.DataFrame, cfg: DatasetConfig, verbose=True) -> pd.
 
     # assume defenders mirror receivers by maintaining offset
     defender_mask = df['player_role'] == 'Defensive Coverage'
-    has_mirror = df.get('mirror_offset_x', 0).notna() & (df.get('mirror_wr_dist', 50) < 15)
+    has_mirror = df.get('mirror_offset_x', 0.0).notna() & (df.get('mirror_wr_dist', 50) < 15)
     coverage_mask = defender_mask & has_mirror
 
     df.loc[coverage_mask, 'projected_x'] = (
         df.loc[coverage_mask, 'ball_land_x'] + 
-        df.loc[coverage_mask, 'mirror_offset_x'].fillna(0)
+        df.loc[coverage_mask, 'mirror_offset_x'].fillna(0.0)
     )
     df.loc[coverage_mask, 'projected_y'] = (
         df.loc[coverage_mask, 'ball_land_y'] + 
-        df.loc[coverage_mask, 'mirror_offset_y'].fillna(0)
+        df.loc[coverage_mask, 'mirror_offset_y'].fillna(0.0)
     )
 
     # Projections may push players out of bounds
@@ -471,7 +474,8 @@ def engineer_features(df: pd.DataFrame, cfg: DatasetConfig, verbose=True) -> pd.
     if verbose:
         print('---Route Analysis---')
 
-    route_df = route_features(df, cfg)
+    route_df = route_features(df, cfg, fit=training)
+        
     df = df.merge(route_df, on=['game_id', 'play_id', 'nfl_id', 'frame_id'], how='left')
     
     if verbose:

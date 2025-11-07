@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import matplotlib.patches as patches
@@ -12,7 +13,7 @@ from utils import Config
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='torch')
 
-def plot_play(df_input, df_output, plays, model, scaler, cfg):
+def plot_play(df_input, df_output, model, scaler, cfg):
     """
     Visualize a single play and overlay GNN-Transformer predicted future positions.
 
@@ -22,12 +23,6 @@ def plot_play(df_input, df_output, plays, model, scaler, cfg):
         Input DataFrame containing past frames for the play.
     df_output (pd.DataFrame):
         Output DataFrame containing true future frames for the play.
-    gid (int):
-        Game id of the play to plot.
-    pid (int):
-        Play id of the play to plot.
-    plays (list[tuple[int, int]]):
-        list of tuples of game_ids and play_ids
     model (nn.Module):
         Trained GNNTransformer model used to predict futures.
     scaler (FeatureScaler):
@@ -38,11 +33,8 @@ def plot_play(df_input, df_output, plays, model, scaler, cfg):
     None
         Displays a matplotlib figure with input, true future and predicted trajectories.
     """
-    if isinstance(plays, tuple): # single play
-        plays = [plays]
-    elif not isinstance(plays, (list, tuple)):
-        raise TypeError('"plays" must be a tuple (gid, pid) or list there of')
     
+    plays = df_input[['game_id', 'play_id']].drop_duplicates().values
     n_plays = len(plays)
 
     # grid layout
@@ -63,16 +55,8 @@ def plot_play(df_input, df_output, plays, model, scaler, cfg):
         ax = axes[idx]
         ax.set_title(f'Game {gid}, Play {pid}')
 
-        # make sure it exists
-        if (gid not in df_input['game_id'].values) or (pid not in df_input['play_id'].values):
-            ax.text(0.5, 0.5, "Play not found :(", ha='center', va='center')
-            ax.axis('off')
-            continue
-        
-        play = df_input[(df_input['game_id'] == gid) & (df_input['play_id'] == pid)]
+        play_input = df_input[(df_input['game_id'] == gid) & (df_input['play_id'] == pid)]
         play_output = df_output[(df_output['game_id'] == gid) & (df_output['play_id'] == pid)].copy()
-        
-        engineered_play = engineer_features(play, cfg.dataset)
         
         (
             X,         # (1, N, T_in, F)
@@ -82,12 +66,12 @@ def plot_play(df_input, df_output, plays, model, scaler, cfg):
             y_mask,       # (1, N, T_out)
             id_map        # (1, N)
         ) = generate_sequences_4D(
-            engineered_play,
+            play_input,
             cfg.dataset,
             df_output=play_output
         )
 
-        num_frames_output = int(play.iloc[0]['num_frames_output'])
+        num_frames_output = int(play_input.iloc[0]['num_frames_output'])
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         # scale input
@@ -159,7 +143,7 @@ def plot_play(df_input, df_output, plays, model, scaler, cfg):
         for x in range(10, 120, 10):
             ax.axvline(x=x, color='black' if x not in (10, 110) else 'green', linestyle='--', linewidth=1.0, alpha=0.5)
 
-        for player_id, player_df in play.groupby('nfl_id'):
+        for player_id, player_df in play_input.groupby('nfl_id'):
             # pre throw
             pos = player_df.iloc[0]['player_position']
             color = color_map.get(pos, 'gray')
@@ -174,7 +158,7 @@ def plot_play(df_input, df_output, plays, model, scaler, cfg):
                 ax.scatter(true_future['transformer_x'], true_future['transformer_y'], s=55, linewidths=1.8, marker='D', facecolor='none', edgecolor=color, label=None)
 
         # plot ball land
-        ax.scatter(play.iloc[0]['ball_land_x'], play.iloc[0]['ball_land_y'], s=120, marker='x', color='black')
+        ax.scatter(play_input.iloc[0]['ball_land_x'], play_input.iloc[0]['ball_land_y'], s=120, marker='x', color='black')
 
         ax.set_xlabel("X Position")
         ax.set_ylabel("Y Position")
@@ -222,14 +206,6 @@ if __name__ == '__main__':
 
     df_input, df_output, _, _ = load_prediction_data(cfg.dataset)
     df_input['player_height'] = df_input['player_height'].apply(height_to_inches)
-    df_input = engineer_features(invert_direction(df_input), cfg.dataset)
-    df_output = invert_direction(map_play_direction(df_input, df_output))
-    
-    model_path = os.path.join('Saves/', 'Models/', 'gnn_opt.pth')
-    scaler_path = os.path.join('Saves/', 'Scalers/', 'gnn_opt.pkl')
-
-    model = torch.load(model_path)
-    scaler = FeatureScaler.load(scaler_path)
 
     plays = [
         (2023112300, 55),
@@ -245,4 +221,16 @@ if __name__ == '__main__':
     sampled_pairs = unique_pairs.sample(n=9, replace=False).values
     plays = [(id[0], id[1]) for id in sampled_pairs]    
 
-    plot_play(df_input, df_output, plays, model, scaler, cfg)
+    df_plays = pd.DataFrame(plays, columns=['game_id', 'play_id'])
+    df_filtered = df_input.merge(df_plays, on=['game_id', 'play_id'], how='inner')
+    
+    df_filtered = engineer_features(invert_direction(df_filtered), cfg.dataset, training=False)
+    df_output = invert_direction(map_play_direction(df_filtered, df_output))
+    
+    model_path = os.path.join('Saves/', 'Models/', 'gnn_expanded_features.pth')
+    scaler_path = os.path.join('Saves/', 'Scalers/', 'gnn_expanded_features.pkl')
+
+    model = torch.load(model_path)
+    scaler = FeatureScaler.load(scaler_path)
+
+    plot_play(df_filtered, df_output, model, scaler, cfg)
