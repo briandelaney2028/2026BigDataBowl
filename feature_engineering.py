@@ -242,6 +242,7 @@ def route_features(df, cfg, kmeans=None, scaler=None, fit=True):
                     'speed_change': speed_change,
                 })
     
+    print('***Averaging overlapping windows***')
     # aggregate overlapping windows by averaging
     route_df = pd.DataFrame(temp_records)
     if route_df.empty:
@@ -252,12 +253,13 @@ def route_features(df, cfg, kmeans=None, scaler=None, fit=True):
     )
     
     # clustering
+    print('***Clustering***')
     feat_cols = [
         'traj_straightness', 'traj_max_turn', 'traj_mean_turn',
         'traj_depth', 'traj_width', 'speed_mean', 'speed_change'
     ]
     X = route_df[feat_cols].fillna(0)
-
+    
     if fit:
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
@@ -269,10 +271,10 @@ def route_features(df, cfg, kmeans=None, scaler=None, fit=True):
         route_df['route_pattern'] = kmeans.fit_predict(X_scaled)
         
         # save scaler and kmeans
-        scaler_save_path = os.path.join(cfg.dataset.data_dir, 'Saves', 'route_scaler.pkl')
+        scaler_save_path = os.path.join(cfg.data_dir, 'Saves', 'route_scaler.pkl')
         with open(scaler_save_path, 'wb') as f:
             pickle.dump(scaler, f)
-        kmeans_save_path = os.path.join(cfg.dataset.data_dir, 'Saves', 'route_kmeans.pkl')
+        kmeans_save_path = os.path.join(cfg.data_dir, 'Saves', 'route_kmeans.pkl')
         with open(kmeans_save_path, 'wb') as f:
             pickle.dump(kmeans, f)
 

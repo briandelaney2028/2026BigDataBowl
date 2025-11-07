@@ -75,7 +75,7 @@ def generate_sequences_4D(
     global_max_ylen = 0
 
     X_list, y_list, player_mask_list, target_mask_list, y_mask_list, id_list = [], [], [], [], [], []
-    for idx, ((gid, pid), play_df) in tqdm(enumerate(input_groups.items()), "Sequencing..."):
+    for idx, ((gid, pid), play_df) in tqdm(enumerate(input_groups.items()), "Sequencing...", leave=False):
         player_groups = dict(tuple(play_df.groupby('nfl_id', sort=False)))
         players = list(player_groups.keys())
         N = len(players)
@@ -175,9 +175,9 @@ def generate_sequences_4D(
             #                                        y=y_engineered['y'] - df_sequence['y'].iloc[-1])
             #     y_list.append(y_engineered[cfg.features].to_numpy())
 
-        # report out
-        if (idx + 1) % max(1, total_plays // 10) == 0:
-            print(f"Processed {(idx + 1) / total_plays * 100:.0f}% of plays")
+        # # report out
+        # if (idx + 1) % max(1, total_plays // 10) == 0:
+        #     print(f"Processed {(idx + 1) / total_plays * 100:.0f}% of plays")
 
         # check against data fraction
         if cfg.data_fraction < 1.0 and (idx+1) / total_plays >= cfg.data_fraction:
