@@ -50,8 +50,7 @@ def get_dataloaders(cfg) -> tuple[DataLoader, DataLoader, DataLoader]:
     required_keys = ['X', 'y', 'player_mask', 'target_mask', 'y_mask', 'ids']
     data = utils.load_saved_data(save_path, required_keys)
 
-    # If loading failed, generate and save new data
-    if data is None:
+    def load_data():
         # load data, and engineer features
         df_input, df_output, _, _ = utils.load_prediction_data(cfg.dataset)
         df_input['player_height'] = df_input['player_height'].apply(utils.height_to_inches)
@@ -63,8 +62,20 @@ def get_dataloaders(cfg) -> tuple[DataLoader, DataLoader, DataLoader]:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         np.savez(save_path, X=X, y=y, player_mask=player_mask, target_mask=target_mask, y_mask=y_mask, ids=ids)
         print('[INFO] Data saved successfully to {save_path}')
+
+        return X, y, player_mask, target_mask, y_mask, ids
+
+    # If loading failed, generate and save new data
+    if data is None:
+        X, y, player_mask, target_mask, y_mask, ids = load_data()
     else:
         X, y, player_mask, target_mask, y_mask, ids = data['X'], data['y'], data['player_mask'], data['target_mask'], data['y_mask'], data['ids']
+    
+    B, N, T, F = X.shape
+    if F != cfg.dataset.input_size:
+        print('[INFO] Outdated Dataset...')
+        X, y, player_mask, target_mask, y_mask, ids = load_data()
+    
     print('[INFO] Data ready for use.')
 
     # Make Train-Test split
@@ -271,7 +282,61 @@ def masked_FDE_loss(predictions, targets, mask):
         return torch.tensor(0.0, device=device, requires_grad=True)
     return disp_err.sum() / denom
 
-def smoothness_loss(predictions, last_obs, mask, player_mask, lambda_vel=1.0, lambda_acc=1.0):
+class maskedCriterion(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.huber = maskedHuberLoss(cfg.training.delta, cfg.training.time_decay)
+        self.smooth = smoothnessLoss(cfg.training.lambda_vel, cfg.training.lambda_acc)
+
+    def forward(self, pred, target, last_obs, mask, player_mask):
+        huber_loss = self.huber(pred, target, mask)
+        if last_obs is None:
+            return huber_loss, None
+        smooth_output = self.smooth(pred, last_obs, mask, player_mask)
+        return huber_loss, smooth_output
+
+class maskedHuberLoss(nn.Module):
+    """
+    Compute masked Huber loss with time decay over output timesteps
+
+    Parameters:
+        predictions (torch.Tensor): Predicted values (B, N, T_out, F) or (S, T_out, F)
+        targets (torch.Tensor): Target values (B, N, T_out, F) or (S, T_out, F)
+        mask (torch.Tensor): (B, N, T_out) -> True where valid output
+
+    Returns:
+        loss (torch.Tensor): Scalar loss value
+    """
+    def __init__(self, delta=0.5, time_decay=0.03):
+        super().__init__()
+        self.delta = delta
+        self.time_decay = time_decay
+
+    def forward(self, pred, target, mask):
+        err = pred - target
+        abs_err = torch.abs(err)
+        # huber loss
+        # if abs err <= delta threshold squared loss
+        # if abs err > delta  L1 style loss
+        huber = torch.where(abs_err <= self.delta, 0.5 * torch.pow(err, 2),
+                            self.delta * (abs_err - 0.5 * self.delta))
+        
+        if self.time_decay > 0:
+            T = pred.size(2)
+            t = torch.arange(T, device=pred.device).float()
+            weight = torch.exp(-self.time_decay * t)
+            weight = weight.view(1, 1, T, 1)
+            huber = huber * weight
+            mask = mask.unsqueeze(-1) * weight
+
+        denom = mask.sum()
+        if denom <= 0:
+            return torch.tensor(0.0, device=pred.device, requires_grad=True)
+        
+        loss = (huber * mask).sum() / denom
+        return loss
+
+class smoothnessLoss(nn.Module):
     """
     Penalize large changes in x/y velocities and accelerations across predicted
     outputs, using the same reconstruction logic as reconstruct_absolute_from_deltas,
@@ -287,47 +352,53 @@ def smoothness_loss(predictions, last_obs, mask, player_mask, lambda_vel=1.0, la
     Returns:
         total_loss (torch.Tensor), loss_dict (dict)
     """
-    device = predictions.device
-    B, N, T_out, _ = predictions.shape
-    if torch.isnan(last_obs).any():
-        last_obs = torch.nan_to_num(last_obs, nan=0.0)
+    def __init__(self, lambda_vel=1.0, lambda_acc=1.0):
+        super().__init__()
+        self.lambda_vel = lambda_vel
+        self.lambda_acc = lambda_acc
+    
+    def forward(self, pred, last_obs, mask, player_mask):
+        device = pred.device
+        B, N, T_out, _ = pred.shape
+        if torch.isnan(last_obs).any():
+            last_obs = torch.nan_to_num(last_obs, nan=0.0)
 
-    # Reconstruct absolute positions
-    abs_pos = torch.zeros_like(predictions)
-    abs_pos[:, :, 0, :] = last_obs[:, :, 0, :] + predictions[:, :, 0, :]
-    for t in range(1, T_out):
-        abs_pos[:, :, t, :] = abs_pos[:, :, t-1, :] + predictions[:, :, t, :]
+        # Reconstruct absolute positions
+        abs_pos = torch.zeros_like(pred)
+        abs_pos[:, :, 0, :] = last_obs[:, :, 0, :] + pred[:, :, 0, :]
+        for t in range(1, T_out):
+            abs_pos[:, :, t, :] = abs_pos[:, :, t-1, :] + pred[:, :, t, :]
 
-    # mask invalid players
-    valid_mask = player_mask.unsqueeze(-1).unsqueeze(-1)  # (B, N, 1, 1)
-    abs_pos = abs_pos * valid_mask
+        # mask invalid players
+        valid_mask = player_mask.unsqueeze(-1).unsqueeze(-1)  # (B, N, 1, 1)
+        abs_pos = abs_pos * valid_mask
 
-    # Extend positions and mask with last_obs
-    pos = torch.cat([last_obs, abs_pos], dim=2)  # (B, N, T_out+1, 2)
-    extended_mask = torch.cat(
-        [torch.ones_like(mask[..., :1], dtype=torch.bool, device=device), mask], dim=2
-    )
+        # Extend positions and mask with last_obs
+        pos = torch.cat([last_obs, abs_pos], dim=2)  # (B, N, T_out+1, 2)
+        extended_mask = torch.cat(
+            [torch.ones_like(mask[..., :1], dtype=torch.bool, device=device), mask], dim=2
+        )
 
-    # compute velocities
-    vel = pos[..., 1:, :] - pos[..., :-1, :]
-    mask_vel = extended_mask[..., 1:] & extended_mask[..., :-1] & player_mask.unsqueeze(-1)
+        # compute velocities
+        vel = pos[..., 1:, :] - pos[..., :-1, :]
+        mask_vel = extended_mask[..., 1:] & extended_mask[..., :-1] & player_mask.unsqueeze(-1)
 
-    # compute accelerations
-    acc = vel[..., 1:, :] - vel[..., :-1, :]
-    mask_acc = mask_vel[..., 1:] & mask_vel[..., :-1]
+        # compute accelerations
+        acc = vel[..., 1:, :] - vel[..., :-1, :]
+        mask_acc = mask_vel[..., 1:] & mask_vel[..., :-1]
 
-    # penalize large velocities and accelerations 
-    vel_diff_sq = (vel.pow(2).sum(dim=-1)) * mask_vel
-    acc_diff_sq = (acc.pow(2).sum(dim=-1)) * mask_acc
+        # penalize large velocities and accelerations 
+        vel_diff_sq = (vel.pow(2).sum(dim=-1)) * mask_vel
+        acc_diff_sq = (acc.pow(2).sum(dim=-1)) * mask_acc
 
-    denom_vel = mask_vel.sum()
-    denom_acc = mask_acc.sum()
+        denom_vel = mask_vel.sum()
+        denom_acc = mask_acc.sum()
 
-    vel_loss = vel_diff_sq.sum() / denom_vel if denom_vel > 0 else torch.tensor(0.0, device=device)
-    acc_loss = acc_diff_sq.sum() / denom_acc if denom_acc > 0 else torch.tensor(0.0, device=device)
+        vel_loss = vel_diff_sq.sum() / denom_vel if denom_vel > 0 else torch.tensor(0.0, device=device)
+        acc_loss = acc_diff_sq.sum() / denom_acc if denom_acc > 0 else torch.tensor(0.0, device=device)
 
-    total = lambda_vel * vel_loss + lambda_acc * acc_loss
-    return total, {'vel': vel_loss.item(), 'acc': acc_loss.item()}
+        total = self.lambda_vel * vel_loss + self.lambda_acc * acc_loss
+        return total, {'vel': vel_loss.item(), 'acc': acc_loss.item()}
 
 def collate_default(batch):
     Xs = torch.stack([b[0] for b in batch], dim=0)
@@ -499,17 +570,17 @@ class Trainer:
                     y_mask=y_mask
                 )
 
+            # compute huber and smooth loss
+            huber_loss, (smooth_loss, smooth_log) = self.loss_fn(
+                pred_deltas[..., 0:2], 
+                y_batch[..., 0:2], 
+                X_batch[:, :, -1:, :2],
+                y_mask,
+                player_mask
+            )
 
-            # compute prediction loss
-            pred_loss = self.loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
-
-            # compute smoothness loss
-            smooth_loss, smooth_log = smoothness_loss(pred_deltas, X_batch[:, :, -1:, :2], y_mask, player_mask, 
-                                                      lambda_vel=self.cfg.training.lambda_vel,
-                                                      lambda_acc=self.cfg.training.lambda_acc)
-            
             # combine for total loss
-            loss = pred_loss + smooth_loss
+            loss = huber_loss + smooth_loss
 
             # backward
             loss.backward()
@@ -517,7 +588,7 @@ class Trainer:
             self.optimizer.step()
 
             total_loss += loss.item() * y_mask.sum().item()
-            total_pred_loss += pred_loss.item() * y_mask.sum().item()
+            total_pred_loss += huber_loss.item() * y_mask.sum().item()
             total_vel_loss += smooth_log['vel'] * y_mask.sum().item()
             total_acc_loss += smooth_log['acc'] * y_mask.sum().item()
             total_valid += y_mask.sum().item()
@@ -573,7 +644,7 @@ class Trainer:
             )
             
             # loss and backward
-            val_loss = self.loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
+            val_loss, _ = self.loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], None, y_mask, player_mask)
             total_loss += val_loss.item() * y_mask.sum().item()
             total_valid += y_mask.sum().item()
 
