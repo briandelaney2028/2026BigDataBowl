@@ -8,8 +8,7 @@ import os
 import math
 from feature_engineering import engineer_features
 from data_sequencing import generate_sequences_4D
-from train import reconstruct_absolute_from_deltas
-from utils import Config
+from utils import Config, reconstruct_absolute_from_deltas
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='torch')
 
@@ -216,9 +215,10 @@ if __name__ == '__main__':
 
     # plot_play(df_input, df_output, plays, model, scaler, cfg)
 
-    # get 9 random plays
+    # get N random plays
+    N = 4
     unique_pairs = df_input[['game_id', 'play_id']].drop_duplicates()
-    sampled_pairs = unique_pairs.sample(n=9, replace=False).values
+    sampled_pairs = unique_pairs.sample(n=N, replace=False).values
     plays = [(id[0], id[1]) for id in sampled_pairs]    
 
     df_plays = pd.DataFrame(plays, columns=['game_id', 'play_id'])
@@ -227,8 +227,8 @@ if __name__ == '__main__':
     df_filtered = engineer_features(invert_direction(df_filtered), cfg.dataset, training=False)
     df_output = invert_direction(map_play_direction(df_filtered, df_output))
     
-    model_path = os.path.join('Saves/', 'Models/', 'gnn_expanded_features.pth')
-    scaler_path = os.path.join('Saves/', 'Scalers/', 'gnn_expanded_features.pkl')
+    model_path = os.path.join('Saves/', 'Models/', '1203_opt_noGNN.pth')
+    scaler_path = os.path.join('Saves/', 'Scalers/', '1203_opt_noGNN.pkl')
 
     model = torch.load(model_path)
     scaler = FeatureScaler.load(scaler_path)

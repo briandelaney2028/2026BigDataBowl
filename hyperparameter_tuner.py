@@ -100,7 +100,7 @@ class OptunaTrainer(Trainer):
                     ckpt_dir = os.path.join('Saves', 'Models', 'checkpoints', f'trial_{self.trial.number}')
                     os.makedirs(ckpt_dir, exist_ok=True)
                     torch.save(self.model.state_dict(), os.path.join(ckpt_dir, f'pruned_epoch_{epoch+1}.pth'))
-                    raise optuna.exceptions.TrialPruned(f'Trial {self.trial.number} was prruned at epoch {epoch+1}')
+                    raise optuna.exceptions.TrialPruned(f'Trial {self.trial.number} was pruned at epoch {epoch+1}')
                 
             # Early Stopping
             if self.epochs_no_improve >= cfg.early_stopping_patience:
@@ -132,6 +132,10 @@ def obj(trial: optuna.trial.Trial, n_epochs_warmup_prune: int = 3):
     lr = trial.suggest_float('optimizer.lr', 1e-5, 5e-3, log=True)
     weight_decay = trial.suggest_float('optimizer.weight_decay', 1e-6, 1e-3, log=True)
     batch_size = trial.suggest_categorical('training.batch_size', [16, 32, 64])
+    delta = trial.suggest_float('training.delta', 0.3, 1.0)
+    time_decay = trial.suggest_float('training.time_decay', 0, 0.12)
+    # lambda_vel = trial.suggest_float('training.lambda_vel', 1e-3, 1e2, log=True)
+    # lambda_acc = trial.suggest_float('training.lambda_acc', 1e-3, 1e2, log=True)
     d_model = trial.suggest_categorical('transformer.d_model', [64, 128, 256])
     num_enc = trial.suggest_categorical('transformer.num_encoder_layers', [2, 3, 4])
     num_dec = trial.suggest_categorical('transformer.num_decoder_layers', [2, 3])
@@ -144,6 +148,10 @@ def obj(trial: optuna.trial.Trial, n_epochs_warmup_prune: int = 3):
     cfg.optimizer.weight_decay = weight_decay
     # training
     cfg.training.batch_size = batch_size
+    cfg.training.delta = delta
+    cfg.training.time_decay = time_decay
+    cfg.training.lambda_vel = 0 #lambda_vel
+    cfg.training.lambda_acc = 0 #lambda_acc
     cfg.training.seed = 42  
     # transformer
     cfg.transformer.d_model = d_model
@@ -165,7 +173,6 @@ def obj(trial: optuna.trial.Trial, n_epochs_warmup_prune: int = 3):
     # trainer
     trainer = OptunaTrainer(
         model=model,
-        loss_fn=masked_mse_loss,
         train_loader=train_loader,
         val_loader=val_loader,
         cfg=cfg,
@@ -185,16 +192,16 @@ def obj(trial: optuna.trial.Trial, n_epochs_warmup_prune: int = 3):
     results = utils.evaluate_model(
         trained_model,
         test_loader,
-        loss_fns=masked_mse_loss
+        loss_fns=masked_FDE_loss
     )
-    test_loss = results['masked_mse_loss']
+    test_loss = results['masked_FDE_loss']
     return test_loss
 
 def run_optuna_study(
         n_trials: int = 40,
         n_jobs: int = 1,
         timeout: int = None,
-        study_name: str = 'gnn_transformer_opt',
+        study_name: str = 'no_GNN',
         storage = None
 ):
     sampler = TPESampler(seed=42)
@@ -232,7 +239,7 @@ def run_optuna_study(
 
 if __name__ == '__main__':
     # Trial params
-    n_trials = 40
+    n_trials = 30
     n_jobs = 1
     timeout_seconds = None
 

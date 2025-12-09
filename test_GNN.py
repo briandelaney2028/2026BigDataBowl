@@ -14,13 +14,17 @@ warnings.filterwarnings(
 )
 
 cfg = Config()
-cfg.optimizer.lr = 0.003754
-cfg.optimizer.weight_decay = 1.7698e-6
-cfg.training.batch_size = 16
-cfg.transformer.d_model = 64
-cfg.transformer.num_encoder_layers = 4
-cfg.transformer.num_decoder_layers = 2
-cfg.transformer.dropout = 0.18155
+cfg.optimizer.lr = 2.575e-4
+cfg.optimizer.weight_decay = 1.917e-5
+cfg.training.batch_size = 32
+cfg.training.delta = 0.74549
+cfg.training.time_decay = 0.03772
+cfg.training.lambda_vel = 0.1# 35.2048
+cfg.training.lambda_acc = 0.05# 0.0196743
+cfg.transformer.d_model = 128
+cfg.transformer.num_encoder_layers = 3
+cfg.transformer.num_decoder_layers = 3
+cfg.transformer.dropout = 0.090305
 
 utils.set_seed(cfg.training.seed)
     
@@ -31,9 +35,10 @@ print("Model:", gnn_transformer)
 num_params = sum(p.numel() for p in gnn_transformer.parameters())
 print(f'Number of Parameters: {num_params}')
 
+criterion = maskedCriterion(cfg)
+
 trainer = Trainer(
     model=gnn_transformer,
-    loss_fn = masked_mse_loss,
     train_loader=train_loader,
     val_loader=val_loader,
     cfg=cfg,
@@ -42,9 +47,9 @@ trainer = Trainer(
 trained_gnn_transformer, transformer_history = trainer.fit()
 
 model_folder = os.path.join(cfg.dataset.saves_dir, 'Models/')
-model_path = os.path.join(model_folder, 'ss_gnn_opt_smooth.pth')
+model_path = os.path.join(model_folder, '1203_opt_noGNN.pth')
 scaler_folder = os.path.join(cfg.dataset.saves_dir, 'Scalers/')
-scaler_path = os.path.join(scaler_folder, 'ss_gnn_opt_smooth.pkl')
+scaler_path = os.path.join(scaler_folder, '1203_opt_noGNN.pkl')
 
 torch.save(trained_gnn_transformer, model_path)
 scaler.save(scaler_path)

@@ -464,12 +464,14 @@ class GNNTransformer(nn.Module):
         self.d_model = cfg.d_model
 
         # Frame GNN
-        self.frame_gnn = FrameGNN(
-            in_feats=in_feats, 
-            d_model=cfg.d_model,
-            n_heads=cfg.gnn_nhead, 
-            attn_dropout=cfg.dropout
-        )
+        # self.frame_gnn = FrameGNN(
+        #     in_feats=in_feats, 
+        #     d_model=cfg.d_model,
+        #     n_heads=cfg.gnn_nhead, 
+        #     attn_dropout=cfg.dropout
+        # )
+        
+        self.input_adapter = nn.Linear(in_feats, cfg.d_model)
 
         # instantiate the base Transformer class
         self.transformer = Transformer(
@@ -608,9 +610,12 @@ class GNNTransformer(nn.Module):
             pm_expand = player_mask.unsqueeze(-1).expand(-1, -1, T_in)  # (B, N, T_in)
             src_valid_mask = src_valid_mask & pm_expand
 
-        # Frame GNN over ALL players with masking
-        gnn_out = self.frame_gnn(src, player_mask=player_mask)
-
+        # # Frame GNN over ALL players with masking
+        # gnn_out = self.frame_gnn(src, player_mask=player_mask)
+        # NO GNN
+        src = torch.nan_to_num(src, nan=0.0)
+        gnn_out = self.input_adapter(src)
+        
         # select only target player embeddings and flatten into shape (S, T_in, d_model)
         if target_mask is None:
             # predict for all players
@@ -682,9 +687,11 @@ class GNNTransformer(nn.Module):
             pm_expand = player_mask.unsqueeze(-1).expand(-1, -1, T_in)
             src_valid_mask = src_valid_mask & pm_expand
 
-        # Frame GNN over ALL players
-        gnn_out = self.frame_gnn(src, player_mask=player_mask)
-
+        # # Frame GNN over ALL players
+        # gnn_out = self.frame_gnn(src, player_mask=player_mask)
+        # NO GNN
+        gnn_out = self.input_adapter(src)
+        
         # flatten targets
         if target_mask is None:
             target_mask = torch.ones((B, N), dtype=torch.bool, device=device)

@@ -72,7 +72,7 @@ def get_dataloaders(cfg) -> tuple[DataLoader, DataLoader, DataLoader]:
         X, y, player_mask, target_mask, y_mask, ids = data['X'], data['y'], data['player_mask'], data['target_mask'], data['y_mask'], data['ids']
     
     B, N, T, F = X.shape
-    if F != cfg.dataset.input_size:
+    if F != cfg.dataset.feature_len:
         print('[INFO] Outdated Dataset...')
         X, y, player_mask, target_mask, y_mask, ids = load_data()
     
@@ -185,44 +185,6 @@ def prepare_targets_as_deltas(y_abs, last_pos, player_mask):
 
     return deltas
 
-def reconstruct_absolute_from_deltas(last_pos, deltas, player_mask):
-    """
-    Reconstruct absolute target positions from frame-to-frame deltas.
-
-    Parameters:
-        last_pos (torch.Tensor or np.ndarray): Last known position from input (B, N, 2)
-        deltas (torch.Tensor or np.ndarray): Predicted or true deltas (B, N, T_out, num_features)
-        player_mask (torch.Tensor or np.ndarray): Player validity mask (B, N)
-        
-    Returns:
-        np.ndarray: Absolute positions (B, N, T_out, num_features)
-    """
-    # Convert to numpy if necessary
-    if isinstance(deltas, torch.Tensor):
-        deltas = deltas.detach().cpu().numpy()
-    if isinstance(last_pos, torch.Tensor):
-        last_pos = last_pos.detach().cpu().numpy()
-    if isinstance(player_mask, torch.Tensor):
-        player_mask = player_mask.detach().cpu().numpy()
-    
-    B, N, T, F = deltas.shape
-    abs_pos = np.zeros_like(deltas, dtype=np.float32)
-    valid_mask = player_mask.astype(bool)
-
-    for b in range(B):
-        for n in range(N):
-            if not valid_mask[b, n]:
-                continue    # skip padded players
-            abs_pos[b, n, 0, :2] = last_pos[b, n, :2] + deltas[b, n, 0, :2]
-            for t in range(1, T):
-                abs_pos[b, n, t, :2] = abs_pos[b, n, t-1, :2] + deltas[b, n, t, :2]
-
-    # copy over any remaining non-positional features unchanged
-    if F > 2:
-        abs_pos[..., 2:] = deltas[..., 2:]
-
-    return abs_pos
-
 def masked_mse_loss(predictions, targets, mask):
     """
     Compute masked Mean Squared Error loss
@@ -250,8 +212,8 @@ def masked_FDE_loss(predictions, targets, mask):
     Compute masked Final Displacement Error loss
 
     Parameters:
-        predictions (torch.Tensor): Predicted values (B, N, T_out, F) or (S, T_out, F)
-        targets (torch.Tensor): Target values (B, N, T_out, F) or (S, T_out, F)
+        predictions (torch.Tensor): Predicted values (B, N, T_out, F)
+        targets (torch.Tensor): Target values (B, N, T_out, F)
         mask (torch.Tensor): (B, N, T_out) -> True where valid output
 
     Returns:
@@ -412,7 +374,6 @@ def collate_default(batch):
 class Trainer:
     def __init__(self, 
             model: GNNTransformer, 
-            loss_fn: callable, 
             train_loader: DataLoader, 
             val_loader: DataLoader, 
             cfg: Config, 
@@ -425,7 +386,6 @@ class Trainer:
 
         Args:
             model (nn.Module)
-            loss_fn (callable)
             train_loader (DataLoader)
             val_loader (DataLoader)
             cfg (Config): config with optimizer, scheduler, training attributes
@@ -433,7 +393,8 @@ class Trainer:
             logger (optional): wandb / tensorboard / custom logger
         """
         self.model = model
-        self.loss_fn = loss_fn
+        self.loss_fn = maskedCriterion(cfg)
+        self.test_loss_fn = masked_FDE_loss
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.cfg = cfg
@@ -643,8 +604,15 @@ class Trainer:
                 target_mask=target_mask
             )
             
-            # loss and backward
-            val_loss, _ = self.loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], None, y_mask, player_mask)
+            last_pos = X_batch[:, :, -1, 0:2]   # (B, N, 2)
+
+            pred_abs = utils.reconstruct_absolute_from_deltas(last_pos, pred_deltas, player_mask)
+            pred_abs = torch.tensor(pred_abs, dtype=pred_deltas.dtype, device=self.device)
+            true_abs = utils.reconstruct_absolute_from_deltas(last_pos, y_batch, player_mask)
+            true_abs = torch.tensor(true_abs, dtype=y_batch.dtype, device=self.device)
+
+            # loss - Final Displacement Error
+            val_loss = self.test_loss_fn(pred_abs[..., 0:2], true_abs[..., 0:2], y_mask)
             total_loss += val_loss.item() * y_mask.sum().item()
             total_valid += y_mask.sum().item()
 

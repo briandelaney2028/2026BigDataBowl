@@ -113,6 +113,8 @@ class DatasetConfig:
     "frame_id", "num_frames_output"
 ])
 
+    # unscaled feature num
+    feature_len = len(features.default_factory())
     # F_in
     input_size = len(features.default_factory()) + len(angle_features.default_factory())
     output_size = 2 if not target_features else input_size
@@ -304,6 +306,44 @@ def load_saved_data(save_path: str, required_keys: tuple[str]):
         print(f'[ERROR] Failed to load save file ({e}). Regenerating data...')
         return None
 
+def reconstruct_absolute_from_deltas(last_pos, deltas, player_mask):
+    """
+    Reconstruct absolute target positions from frame-to-frame deltas.
+
+    Parameters:
+        last_pos (torch.Tensor or np.ndarray): Last known position from input (B, N, 2)
+        deltas (torch.Tensor or np.ndarray): Predicted or true deltas (B, N, T_out, num_features)
+        player_mask (torch.Tensor or np.ndarray): Player validity mask (B, N)
+        
+    Returns:
+        np.ndarray: Absolute positions (B, N, T_out, num_features)
+    """
+    # Convert to numpy if necessary
+    if isinstance(deltas, torch.Tensor):
+        deltas = deltas.detach().cpu().numpy()
+    if isinstance(last_pos, torch.Tensor):
+        last_pos = last_pos.detach().cpu().numpy()
+    if isinstance(player_mask, torch.Tensor):
+        player_mask = player_mask.detach().cpu().numpy()
+    
+    B, N, T, F = deltas.shape
+    abs_pos = np.zeros_like(deltas, dtype=np.float32)
+    valid_mask = player_mask.astype(bool)
+
+    for b in range(B):
+        for n in range(N):
+            if not valid_mask[b, n]:
+                continue    # skip padded players
+            abs_pos[b, n, 0, :2] = last_pos[b, n, :2] + deltas[b, n, 0, :2]
+            for t in range(1, T):
+                abs_pos[b, n, t, :2] = abs_pos[b, n, t-1, :2] + deltas[b, n, t, :2]
+
+    # copy over any remaining non-positional features unchanged
+    if F > 2:
+        abs_pos[..., 2:] = deltas[..., 2:]
+
+    return abs_pos
+
 def evaluate_model(
         model: torch.nn.Module,
         test_loader: DataLoader,
@@ -353,12 +393,21 @@ def evaluate_model(
 
         # compute each loss
         for i, loss_fn in enumerate(loss_fns):
-            loss = loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
             if getattr(loss_fn, '__name__') == 'masked_FDE_loss':
+                last_pos = X_batch[:, :, -1, 0:2]   # (B, N, 2)
+
+                pred_abs = reconstruct_absolute_from_deltas(last_pos, pred_deltas, player_mask)
+                pred_abs = torch.tensor(pred_abs, dtype=pred_deltas.dtype, device=pred_deltas.device)
+                true_abs = reconstruct_absolute_from_deltas(last_pos, y_batch, player_mask)
+                true_abs = torch.tensor(true_abs, dtype=y_batch.dtype, device=y_batch.device)
+            
+                loss = loss_fn(pred_abs[..., 0:2], true_abs[..., 0:2], y_mask)
+
                 valid_counts = y_mask.sum(dim=-1)
                 valid_mask = valid_counts > 0
                 total_losses[i] = loss.item() * valid_mask.sum().item()
             else:
+                loss = loss_fn(pred_deltas[..., 0:2], y_batch[..., 0:2], y_mask)
                 total_losses[i] = loss.item() * y_mask.sum().item()
 
         total_valid += y_mask.sum().item()
